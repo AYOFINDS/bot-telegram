@@ -106,19 +106,17 @@ async def process_and_forward(media_list, text_msg):
                 entities = m.caption_entities or []
                 break
 
-    # Estrazione rigorosa di Article e Price dal testo originale
-    article_match = re.search(r'(🔍\s*Article:.*)', source_text, re.IGNORECASE)
-    if not article_match:
-        article_match = re.search(r'(Article:.*)', source_text, re.IGNORECASE)
+    # Estrae esattamente la riga dell'articolo e del prezzo cercandole nel testo
+    article_line = "🔍 Article: Prodotto Esclusivo"
+    price_line = "💰 Price: N/A"
 
-    price_match = re.search(r'(💰\s*Price:.*)', source_text, re.IGNORECASE)
-    if not price_match:
-        price_match = re.search(r'(Price:.*)', source_text, re.IGNORECASE)
+    for line in source_text.split('\n'):
+        if 'article:' in line.lower():
+            article_line = line.strip()
+        elif 'price:' in line.lower():
+            price_line = line.strip()
 
-    article_line = article_match.group(1).strip() if article_match else "🔍 Article: Prodotto Esclusivo"
-    price_line = price_match.group(1).strip() if price_match else "💰 Price: N/A"
-
-    # Ricerca del link di usfans nel messaggio originale per sostituire il codice affiliato
+    # Cerca il link di Usfans dalle entità o nel testo
     product_link = None
     for entity in entities:
         if hasattr(entity, 'url') and entity.url:
@@ -127,22 +125,26 @@ async def process_and_forward(media_list, text_msg):
                 break
 
     if not product_link:
-        for entity in entities:
-            if hasattr(entity, 'url') and entity.url and entity.url.startswith("http"):
-                product_link = entity.url
+        # Cerca un qualsiasi link nel testo se l'entity non c'è
+        urls = re.findall(r'https?://[^\s]+', source_text)
+        for u in urls:
+            if 'usfans' in u.lower():
+                product_link = u
                 break
+        if not product_link and urls:
+            product_link = urls[0]
 
     if not product_link:
         product_link = "https://www.usfans.com"
 
-    # Sostituisce qualsiasi vecchio codice con il tuo U2CC3E
+    # Pulisce e applica il codice affiliato corretto
     product_link = re.sub(r'[\?&](ref|affcode)=[^&\s]+', '', product_link)
     if '?' in product_link:
         product_link += f'&affcode={AFFILIATE_TAG}'
     else:
         product_link += f'?affcode={AFFILIATE_TAG}'
 
-    # Struttura fissa richiesta
+    # Struttura finale esatta richiesta
     final_text = (
         f"{article_line}\n"
         f"{price_line}\n\n"
@@ -168,7 +170,7 @@ async def process_and_forward(media_list, text_msg):
         else:
             await client.send_message(TARGET_CHAT, final_text, buttons=buttons)
             
-        print("✅ POST INVIATO ESATTAMENTE COME RICHIESTO!")
+        print("✅ POST INVIATO CORRETTAMENTE CON TESTO E TASTI!")
     except Exception as e:
         print(f"❌ Errore durante l'invio: {e}")
 
