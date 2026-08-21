@@ -2,6 +2,7 @@ import os
 import re
 import asyncio
 import io
+import time
 from flask import Flask
 from threading import Thread
 from waitress import serve
@@ -9,6 +10,7 @@ from telethon import TelegramClient, events
 from telethon.sessions import StringSession
 from telethon.errors import FloodWaitError
 
+# ----------------------------- Flask -----------------------------
 app = Flask(__name__)
 
 @app.route('/')
@@ -19,6 +21,7 @@ def run_flask():
     port = int(os.environ.get("PORT", 8080))
     serve(app, host="0.0.0.0", port=port)
 
+# -------------------------- Config -------------------------------
 raw_api_id = os.environ.get("API_ID")
 API_HASH = os.environ.get("API_HASH")
 STRING_SESSION = os.environ.get("STRING_SESSION")
@@ -35,177 +38,244 @@ TARGET_CHAT = int(raw_target) if raw_target.lstrip('-').isdigit() else raw_targe
 AFFILIATE_TAG = os.environ.get("AFFILIATE_TAG", "U2CC3E")
 LINK_SCONTO = f"https://www.usfans.com/register?ref={AFFILIATE_TAG}"
 
-client = TelegramClient(StringSession(STRING_SESSION), API_ID, API_HASH)
-
+# Canali sorgente: possono essere username (stringa) o ID (int)
 SOURCE_CHATS = ["KakobuySpreadsheet6", -1003634367021, 3634367021]
 
-posts_buffer = {}
+# ------------------------ Buffer Globale -------------------------
+buffers = {}                 # chiave -> dati del buffer
+chat_active_buffers = {}     # chat_id -> [lista di chiavi attive]
+BUFFER_TIMEOUT = 5.0         # secondi per attendere il messaggio complementare
 
+# -------------------------- Funzioni -----------------------------
 def fix_affiliate_link(url, tag=AFFILIATE_TAG):
+    """Aggiunge o sostituisce il parametro affcode/ref con il tag affiliato."""
     if not url:
         return url
-    # Se è un link di un agent/store o usfans, puliamo e iniettiamo il tag
     new_url, count = re.subn(r'([?&])(ref|affcode)=[^&\s]+', rf'\1\2={tag}', url)
     if count > 0:
         return new_url
     separator = '&' if '?' in url else '?'
     return f"{url}{separator}affcode={tag}"
 
-@client.on(events.NewMessage)
-async def handler(event):
-    msg = event.message
-    chat = await event.get_chat()
-    chat_title = getattr(chat, 'title', getattr(chat, 'username', 'Chat privata'))
-    
-    target_sources = ["KakobuySpreadsheet6", -1003634367021, 3634367021]
-    is_valid = False
-    for src in target_sources:
-        if str(src) == str(event.chat_id) or (isinstance(src, str) and src.lower() in str(chat_title).lower()):
-            is_valid = True
-            break
-
-    if not is_valid:
-        return
-
-    # Usiamo il grouped_id se è un album, altrimenti l'id del messaggio (ma guardiamo anche i messaggi vicini)
-    post_key = msg.grouped_id if msg.grouped_id else msg.id
-
-    if post_key not in posts_buffer:
-        posts_buffer[post_key] = {
-            'media_list': [],
-            'raw_text': "",
-            'entities': [],
-            'timer': None
-        }
-
-    if msg.media:
-        posts_buffer[post_key]['media_list'].append(msg)
-        cap = getattr(msg, 'caption', '') or ''
-        if cap:
-            posts_buffer[post_key]['raw_text'] = cap
-            posts_buffer[post_key]['entities'] = msg.caption_entities or []
-
-    if msg.text:
-        posts_buffer[post_key]['raw_text'] = msg.text
-        posts_buffer[post_key]['entities'] = msg.entities or []
-        
-        # Cerca di accoppiare il testo ai messaggi vicini se arrivano separati
-        for offset in [-1, 0, 1]:
-            neighbor_key = (msg.id + offset) if not msg.grouped_id else post_key
-            if neighbor_key in posts_buffer and not posts_buffer[neighbor_key]['raw_text']:
-                posts_buffer[neighbor_key]['raw_text'] = msg.text
-                posts_buffer[neighbor_key]['entities'] = msg.entities or []
-
-    if posts_buffer[post_key]['timer']:
-        posts_buffer[post_key]['timer'].cancel()
-
-    posts_buffer[post_key]['timer'] = asyncio.create_task(process_post(post_key))
-
-async def process_post(post_key):
-    try:
-        await asyncio.sleep(4.0) # Aspettiamo 4 secondi per raccogliere foto e testo insieme
-        
-        data = posts_buffer.pop(post_key, None)
-        if not data:
-            return
-
-        media_list = data['media_list']
-        source_text = data['raw_text']
-        entities = data['entities']
-
-        print(f"🚨 ELABORAZIONE POST [Key: {post_key}]: {len(media_list)} foto, Testo: {bool(source_text)}")
-
-        article_line = "Article: Prodotto Esclusivo"
-        price_line = "Price: N/A"
-
-        for line in source_text.split('\n'):
-            clean_line = line.strip()
-            if 'article:' in clean_line.lower():
-                article_line = clean_line
-            elif 'price:' in clean_line.lower():
-                price_line = clean_line
-
-        # Estrazione intelligente del link del prodotto dal testo o dalle entità
-        product_link = None
-        for entity in entities:
-            if hasattr(entity, 'url') and entity.url:
-                url_lower = entity.url.lower()
-                if 'register' not in url_lower: # Evitiamo il link di registrazione
-                    product_link = entity.url
-                    break
-
-        if not product_link:
-            urls = re.findall(r'https?://[^\s]+', source_text)
-            for u in urls:
-                if 'register' not in u.lower():
-                    product_link = u
-                    break
-
-        if not product_link:
-            product_link = "https://www.usfans.com"
-
-        product_link = fix_affiliate_link(product_link)
-
-        final_text = (
-            f"🎖️ **Official Spreadsheet** 🎖️\n"
-            f"✈️ {article_line}\n"
-            f"💰 {price_line}\n"
-            f"🚚 **Agents:**\n"
-            f"🔗 [UsFans]({product_link})\n\n"
-            f"✍️ [Register UsFans Here ($820 Coupon)]({LINK_SCONTO}) ✍️\n"
-            f"🚨 **Warm Risk Reminder Popup** 🚨"
-        )
-
-        media_messages = [m for m in media_list if m.media]
-        media_messages.sort(key=lambda x: x.id)
-
-        tasks = [download_media_safe(m, idx) for idx, m in enumerate(media_messages)]
-        downloaded = await asyncio.gather(*tasks)
-        image_files = [f for f in downloaded if f is not None]
-
-        if image_files:
-            await client.send_file(TARGET_CHAT, image_files)
-            await client.send_message(TARGET_CHAT, final_text, link_preview=False)
-        else:
-            await client.send_message(TARGET_CHAT, final_text, link_preview=False)
-
-        print("✅ POST INVIATO CORRETTAMENTE CON DATI E LINK REALE!")
-
-    except asyncio.CancelledError:
-        pass
-    except Exception as e:
-        print(f"❌ Errore durante l'invio: {e}")
-
-async def download_media_safe(m, idx):
-    if not m.media:
+async def download_media_safe(msg, idx):
+    """Scarica un media in bytes con timeout."""
+    if not msg.media:
         return None
     try:
-        file_bytes = await asyncio.wait_for(client.download_media(m.media, file=bytes), timeout=30.0)
+        file_bytes = await asyncio.wait_for(
+            client.download_media(msg.media, file=bytes),
+            timeout=30.0
+        )
         if file_bytes:
             bio = io.BytesIO(file_bytes)
             bio.name = f"photo_{idx}.jpg"
             return bio
     except Exception as e:
-        print(f"⚠️ Errore download foto {idx}: {e}")
+        print(f"⚠️ Errore download media: {e}")
     return None
 
+async def process_post(key):
+    """Elabora il buffer dopo il timeout o al momento dell'unione."""
+    try:
+        await asyncio.sleep(BUFFER_TIMEOUT)  # attesa per eventuali messaggi complementari
+    except asyncio.CancelledError:
+        # Il timer è stato cancellato perché il buffer è stato unito a un altro
+        return
+
+    # Recupera e rimuovi il buffer
+    data = buffers.pop(key, None)
+    if not data:
+        return
+
+    # Rimuovi la chiave dalla lista attiva del chat
+    chat_id = data['chat_id']
+    if chat_id in chat_active_buffers and key in chat_active_buffers[chat_id]:
+        chat_active_buffers[chat_id].remove(key)
+        if not chat_active_buffers[chat_id]:
+            del chat_active_buffers[chat_id]
+
+    media_list = data['media_list']
+    source_text = data['text'] or ""
+    entities = data['entities'] or []
+
+    # Estrai Article e Price
+    article_line = "Article: Prodotto Esclusivo"
+    price_line = "Price: N/A"
+
+    for line in source_text.split('\n'):
+        clean = line.strip()
+        if 'article:' in clean.lower():
+            article_line = clean
+        elif 'price:' in clean.lower():
+            price_line = clean
+
+    # Estrai il link del prodotto (escludendo quelli di registrazione)
+    product_link = None
+    # 1) Dai link nelle entities (più affidabile)
+    for entity in entities:
+        if hasattr(entity, 'url') and entity.url:
+            if 'register' not in entity.url.lower():
+                product_link = entity.url
+                break
+    # 2) Se non trovato, cerca con regex
+    if not product_link:
+        urls = re.findall(r'https?://[^\s]+', source_text)
+        for u in urls:
+            if 'register' not in u.lower():
+                product_link = u
+                break
+    # 3) Fallback
+    if not product_link:
+        product_link = "https://www.usfans.com"
+
+    product_link = fix_affiliate_link(product_link)
+
+    # Costruzione del messaggio finale
+    final_text = (
+        f"🎖️ **Official Spreadsheet** 🎖️\n"
+        f"✈️ {article_line}\n"
+        f"💰 {price_line}\n"
+        f"🚚 **Agents:**\n"
+        f"🔗 [UsFans]({product_link})\n\n"
+        f"✍️ [Register UsFans Here ($820 Coupon)]({LINK_SCONTO}) ✍️\n"
+        f"🚨 **Warm Risk Reminder Popup** 🚨"
+    )
+
+    # Scarica le foto
+    media_messages = [m for m in media_list if m.media]
+    media_messages.sort(key=lambda x: x.id)  # ordine di arrivo
+    tasks = [download_media_safe(m, i) for i, m in enumerate(media_messages)]
+    downloaded = await asyncio.gather(*tasks)
+    image_files = [f for f in downloaded if f is not None]
+
+    # Invio
+    if image_files:
+        await client.send_file(TARGET_CHAT, image_files, album=True)
+        await client.send_message(TARGET_CHAT, final_text, link_preview=False)
+    else:
+        await client.send_message(TARGET_CHAT, final_text, link_preview=False)
+
+# -------------------------- Handler ------------------------------
+@client.on(events.NewMessage)
+async def handler(event):
+    msg = event.message
+    chat_id = event.chat_id
+    chat = await event.get_chat()
+    chat_title = getattr(chat, 'title', getattr(chat, 'username', 'Chat privata'))
+
+    # Verifica se il canale è nella lista sorgente
+    is_valid = False
+    for src in SOURCE_CHATS:
+        if str(src) == str(chat_id) or (isinstance(src, str) and src.lower() in str(chat_title).lower()):
+            is_valid = True
+            break
+    if not is_valid:
+        return
+
+    # Determina se il messaggio ha media e/o testo
+    has_media = msg.media is not None
+    has_text = msg.text is not None and msg.text.strip() != ""
+
+    # Se non ha né media né testo, ignora
+    if not has_media and not has_text:
+        return
+
+    # Chiave univoca per il buffer
+    if has_media and msg.grouped_id:
+        key = msg.grouped_id
+    elif has_media:
+        key = msg.id  # singola foto (non album)
+    else:
+        key = "text_" + str(msg.id)  # messaggio di solo testo
+
+    # Se esiste già un buffer con questa chiave (es. altri media dello stesso album)
+    if key in buffers:
+        buffer = buffers[key]
+        if has_media:
+            buffer['media_list'].append(msg)
+        if has_text:
+            buffer['text'] = msg.text
+            buffer['entities'] = msg.entities or []
+        # Reset del timer (perché abbiamo nuovi dati)
+        if buffer['timer']:
+            buffer['timer'].cancel()
+        buffer['timer'] = asyncio.create_task(process_post(key))
+        buffer['timestamp'] = time.time()
+        return
+
+    # Cerca un buffer attivo nello stesso chat a cui unire questo messaggio
+    now = time.time()
+    active_keys = chat_active_buffers.get(chat_id, [])
+    merged = False
+
+    for other_key in active_keys:
+        if other_key == key:
+            continue
+        other = buffers.get(other_key)
+        if not other:
+            continue
+        # Deve essere stato creato entro BUFFER_TIMEOUT
+        if now - other['timestamp'] > BUFFER_TIMEOUT:
+            continue
+
+        # Condizioni di unione:
+        # - se abbiamo media e l'altro buffer non ha ancora media
+        # - oppure se abbiamo testo e l'altro buffer non ha ancora testo
+        if has_media and not other['media_list']:
+            # uniamo il media all'altro buffer
+            other['media_list'].append(msg)
+            if has_text:  # se il media ha anche caption, la usiamo come testo
+                other['text'] = msg.text
+                other['entities'] = msg.entities or []
+            merged = True
+        elif has_text and not other['text']:
+            # uniamo il testo all'altro buffer
+            other['text'] = msg.text
+            other['entities'] = msg.entities or []
+            merged = True
+
+        if merged:
+            # Reset del timer dell'altro buffer
+            if other['timer']:
+                other['timer'].cancel()
+            other['timer'] = asyncio.create_task(process_post(other_key))
+            other['timestamp'] = time.time()
+            break
+
+    if merged:
+        return
+
+    # Nessun buffer compatibile trovato: crea un nuovo buffer
+    new_buffer = {
+        'media_list': [msg] if has_media else [],
+        'text': msg.text if has_text else "",
+        'entities': msg.entities or [],
+        'timer': None,
+        'timestamp': now,
+        'chat_id': chat_id
+    }
+    buffers[key] = new_buffer
+    new_buffer['timer'] = asyncio.create_task(process_post(key))
+    chat_active_buffers.setdefault(chat_id, []).append(key)
+
+# -------------------------- Main --------------------------------
 async def main():
     while True:
         try:
             await client.start()
-            print("🚀 Client connesso e pronto 24/7!")
             await client.run_until_disconnected()
             break
         except FloodWaitError as e:
-            print(f"⏳ Telegram richiede un'attesa di {e.seconds} secondi. Attendo...")
+            print(f"⏳ FloodWait: aspetto {e.seconds} secondi")
             await asyncio.sleep(e.seconds)
         except Exception as e:
-            print(f"❌ Errore imprevisto: {e}")
+            print(f"❌ Errore client: {e}")
             await asyncio.sleep(10)
 
 if __name__ == '__main__':
+    # Avvia Flask in un thread separato
     t = Thread(target=run_flask)
     t.daemon = True
     t.start()
-
+    # Avvia il client Telethon
     asyncio.run(main())
