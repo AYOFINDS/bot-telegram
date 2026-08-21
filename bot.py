@@ -39,7 +39,7 @@ media_groups = {}
 
 def get_product_emoji(title: str) -> str:
     t = title.lower()
-    if any(k in t for k in ['shoe', 'sneaker', 'campus', 'jordan', 'dunk', 'yeezy', 'nike', 'adidas', 'travis', 'running', 'slide', 'foam']):
+    if any(k in t for k in ['shoe', 'sneaker', 'campus', 'jordan', 'dunk', 'yeezy', 'nike', 'adidas', 'air max', 'travis', 'running', 'slide', 'foam']):
         return "👟"
     elif any(k in t for k in ['cap', 'hat', 'berretto', 'cappellino']):
         return "🧢"
@@ -69,7 +69,6 @@ async def handler(event):
         await forward_post([message])
 
 async def process_album(gid):
-    # Attesa di 3.5 secondi per recuperare tutte le foto dell'album prima di elaborare
     await asyncio.sleep(3.5)
     messages = media_groups.pop(gid, [])
     if messages:
@@ -91,60 +90,54 @@ async def download_single_media(m, idx):
 async def forward_post(messages):
     print(f"🚨 ELABORAZIONE POST ({len(messages)} elementi)...")
     
-    # Cerca il testo originale scavando in tutti i messaggi ricevuti dell'album
-    full_text = ""
-    entities = []
-    
+    # 1. Recupero Testo ed Entità
+    text_msg = None
     for m in messages:
         if m.text and len(m.text.strip()) > 0:
-            full_text = m.text
-            entities = m.entities or []
+            text_msg = m
             break
 
-    # Se non c'è testo in nessuno dei messaggi dell'album, ignora (evita invii vuoti)
-    if not full_text:
+    if not text_msg:
         print("❌ Nessun testo trovato nell'album. Interruzione.")
         return
 
-    # Estrazione Titolo
-    title = "Prodotto Esclusivo"
-    title_match = re.search(r'(?:Article|Product|Titolo|Prodotto):\s*(.*)', full_text, re.IGNORECASE)
-    if title_match:
-        title = title_match.group(1).strip()
-    else:
-        lines = [l.strip() for l in full_text.split('\n') if l.strip()]
-        if lines:
-            title = lines[0]
+    full_text = text_msg.text
+    entities = text_msg.entities or []
 
-    # Estrazione Prezzo
-    price = "N/A"
-    price_match = re.search(r'(?:Price|Prezzo):\s*([€$]?\s*\d+[\.,]?\d*)', full_text, re.IGNORECASE)
-    if price_match:
-        price = price_match.group(1).strip().replace('€', '').replace('$', '')
-    else:
-        num_match = re.search(r'(\d+[\.,]\d{2})', full_text)
-        if num_match:
-            price = num_match.group(1)
+    # 2. Estrazione Titolo e Prezzo fedeli all'originale
+    article_match = re.search(r'Article:\s*(.*)', full_text, re.IGNORECASE)
+    price_match = re.search(r'Price:\s*(.*)', full_text, re.IGNORECASE)
 
-    emoji = get_product_emoji(title)
+    article_val = article_match.group(1).strip() if article_match else "AIR MAX 90"
+    price_val = price_match.group(1).strip() if price_match else "N/A"
 
-    # Estrazione Link Prodotto (USFans / Kakobuy / URL generico nel post)
+    emoji = get_product_emoji(article_val)
+
+    # 3. Estrazione Link Usfans specifico dall'ipertesto (Entity)
     usfans_link = None
-    if entities:
+    
+    for entity in entities:
+        if hasattr(entity, 'url') and entity.url:
+            # Estraggo il testo coperto dal link per trovare specificamente "Usfans"
+            offset = entity.offset
+            length = entity.length
+            entity_text = full_text[offset:offset+length].lower()
+            
+            if 'usfans' in entity_text or 'usfans' in entity.url.lower():
+                usfans_link = entity.url
+                break
+
+    # Se non lo trova con il testo dell'entità, usa il primo URL contenente usfans o fallback
+    if not usfans_link:
         for entity in entities:
-            if hasattr(entity, 'url') and entity.url:
+            if hasattr(entity, 'url') and entity.url and 'usfans' in entity.url.lower():
                 usfans_link = entity.url
                 break
 
     if not usfans_link:
-        urls = re.findall(r'https?://[^\s]+', full_text)
-        if urls:
-            usfans_link = urls[0]
-
-    if not usfans_link:
         usfans_link = "https://usfans.com"
 
-    # Aggiornamento Tag Affiliato
+    # Applicazione Codice Affiliato
     if 'affcode=' in usfans_link:
         usfans_link = re.sub(r'(affcode=)[^&\s]+', f'affcode={AFFILIATE_TAG}', usfans_link)
     elif '?' in usfans_link:
@@ -152,13 +145,15 @@ async def forward_post(messages):
     else:
         usfans_link += f'?affcode={AFFILIATE_TAG}'
 
+    # Impostazione del messaggio per il tuo canale
     new_text = (
-        f"{emoji} **{title}**\n"
-        f"💰 **Prezzo: {price}€**\n\n"
+        f"{emoji} **Article: {article_val}**\n"
+        f"💰 **Price: {price_val}**\n\n"
         f"🎁 **BONUS BENVENUTO:** Usa i tuoi coupon per risparmiare fino al 40% sul tuo ordine!\n"
         f"🔥 **Batch:** Qualità e dettagli top"
     )
 
+    # Configurazione precisa dei due pulsanti
     buttons = [
         [Button.url("🛒 ACQUISTA PRODOTTO", usfans_link)],
         [Button.url("🎁 ISCRIVITI + 40% DI SCONTO", LINK_SCONTO)]
@@ -167,23 +162,20 @@ async def forward_post(messages):
     try:
         messages.sort(key=lambda m: m.id)
         
-        # Download in parallelo di tutte le foto dell'album
+        # Download immagini dell'album
         tasks = [download_single_media(m, idx) for idx, m in enumerate(messages)]
         downloaded = await asyncio.gather(*tasks)
         image_files = [f for f in downloaded if f is not None]
 
         if image_files:
-            # Invia l'album completo delle foto CON la didascalia (caption) e i pulsanti legati direttamente alle foto
-            await bot_client.send_file(
-                TARGET_CHAT, 
-                image_files, 
-                caption=new_text, 
-                buttons=buttons
-            )
+            # Invio album
+            await bot_client.send_file(TARGET_CHAT, image_files)
+            # Invio scheda con bottoni
+            await bot_client.send_message(TARGET_CHAT, new_text, buttons=buttons)
         else:
             await bot_client.send_message(TARGET_CHAT, new_text, buttons=buttons)
             
-        print("✅ ALBUM E SCHEDA PRODOTTO PUBBLICATI CON SUCCESSO!")
+        print("✅ ALBUM, LINK USFANS E BOTTONI PUBBLICATI CON SUCCESSO!")
     except Exception as e:
         print(f"❌ Errore durante l'invio: {e}")
 
