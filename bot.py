@@ -6,6 +6,7 @@ from flask import Flask
 from threading import Thread
 from telethon import TelegramClient, events, Button
 from telethon.sessions import StringSession
+from telethon.tl.types import InputMediaPhoto
 
 # 1. Server Web Keep-Alive
 app = Flask(__name__)
@@ -27,7 +28,7 @@ BOT_TOKEN = os.environ.get("BOT_TOKEN")
 raw_target = os.environ.get("TARGET_CHAT", "").strip()
 TARGET_CHAT = int(raw_target) if raw_target.lstrip('-').isdigit() else raw_target
 
-AFFILIATE_TAG = os.environ.get("AFFILIATE_TAG")
+AFFILIATE_TAG = os.environ.get("AFFILIATE_TAG", "U2CC3E")
 LINK_SCONTO = "https://t.me/+DiuD1AbxY8thYzg0"
 
 user_client = TelegramClient(StringSession(STRING_SESSION), API_ID, API_HASH)
@@ -43,6 +44,8 @@ def get_product_emoji(title: str) -> str:
         return "👟"
     elif any(k in t for k in ['cap', 'hat', 'berretto', 'cappellino']):
         return "🧢"
+    elif any(k in t for k in ['watch', 'orologio', 'rolex']):
+        return "⌚"
     elif any(k in t for k in ['hoodie', 'jacket', 'zipper', 'felpa', 'giacca', 'coat', 'fleece', 'puffer']):
         return "🧥"
     elif any(k in t for k in ['tee', 't-shirt', 'shirt', 'maglietta']):
@@ -67,7 +70,7 @@ async def handler(event):
         await forward_post([message])
 
 async def process_album(gid):
-    await asyncio.sleep(2.5)
+    await asyncio.sleep(3.0)
     messages = media_groups.pop(gid, [])
     if messages:
         await forward_post(messages)
@@ -75,7 +78,7 @@ async def process_album(gid):
 async def forward_post(messages):
     print(f"🚨 ELABORAZIONE POST ({len(messages)} elementi)...")
     
-    # Ricerca del testo in tutti i messaggi dell'album
+    # 1. Recupero Testo ed Entità
     full_text = ""
     entities = []
     for m in messages:
@@ -84,32 +87,51 @@ async def forward_post(messages):
             entities = m.entities or []
             break
 
-    # Estrazione Titolo e Prezzo (gestisce sia 'Article:' sia 'Product:')
-    article_match = re.search(r'(?:Article|Product):\s*(.*)', full_text, re.IGNORECASE)
-    price_match = re.search(r'Price:\s*(.*)', full_text, re.IGNORECASE)
+    if not full_text:
+        return
 
-    title = article_match.group(1).strip() if article_match else "Prodotto Esclusivo"
-    price = price_match.group(1).strip() if price_match else "N/A"
+    # 2. Estrazione Titolo e Prezzo avanzata
+    title = "Prodotto Esclusivo"
+    price = "N/A"
+
+    title_match = re.search(r'(?:Article|Product|Titolo|Prodotto):\s*(.*)', full_text, re.IGNORECASE)
+    if title_match:
+        title = title_match.group(1).strip()
+    else:
+        # Prende la prima riga di testo valida come titolo
+        lines = [line.strip() for line in full_text.split('\n') if line.strip()]
+        if lines:
+            title = lines[0]
+
+    price_match = re.search(r'(?:Price|Prezzo):\s*([€$]?\s*\d+[\.,]?\d*)', full_text, re.IGNORECASE)
+    if price_match:
+        price = price_match.group(1).strip().replace('€', '').replace('$', '')
+    else:
+        num_match = re.search(r'(\d+[\.,]\d{2})', full_text)
+        if num_match:
+            price = num_match.group(1)
 
     emoji = get_product_emoji(title)
 
-    # Estrazione Link USFans
+    # 3. Estrazione Link Prodotto Completo
     usfans_link = None
+    
     if entities:
         for entity in entities:
-            if hasattr(entity, 'url') and entity.url and 'usfans' in entity.url.lower():
-                usfans_link = entity.url
-                break
+            if hasattr(entity, 'url') and entity.url:
+                if 'usfans' in entity.url.lower() or 'kakobuy' in entity.url.lower() or 'http' in entity.url.lower():
+                    usfans_link = entity.url
+                    break
 
     if not usfans_link:
-        url_search = re.search(r'https?://[^\s]*usfans[^\s]*', full_text)
-        if url_search:
-            usfans_link = url_search.group(0)
+        urls = re.findall(r'https?://[^\s]+', full_text)
+        if urls:
+            usfans_link = urls[0]
 
     if not usfans_link:
         usfans_link = "https://usfans.com"
 
-    # Applicazione Tag Affiliato
+    # Sostituzione/Inserimento del Tag Affiliato nell'URL specifico
     if 'affcode=' in usfans_link:
         usfans_link = re.sub(r'(affcode=)[^&\s]+', f'affcode={AFFILIATE_TAG}', usfans_link)
     elif '?' in usfans_link:
@@ -130,8 +152,9 @@ async def forward_post(messages):
     ]
 
     try:
-        # Download e conversione in memoria come immagini .jpg
         image_files = []
+        messages.sort(key=lambda m: m.id)
+
         for idx, m in enumerate(messages):
             if m.media:
                 file_bytes = await user_client.download_media(m.media, file=bytes)
@@ -141,12 +164,12 @@ async def forward_post(messages):
                     image_files.append(bio)
 
         if image_files:
-            # 1. Invia l'album con le foto vere
+            # Invio album foto
             await bot_client.send_file(
                 TARGET_CHAT, 
                 image_files
             )
-            # 2. Invia la scheda testo con i pulsanti subito sotto
+            # Invio messaggio formattato con i pulsanti attivi subito sotto
             await bot_client.send_message(
                 TARGET_CHAT,
                 new_text,
@@ -155,7 +178,7 @@ async def forward_post(messages):
         else:
             await bot_client.send_message(TARGET_CHAT, new_text, buttons=buttons)
             
-        print("✅ ALBUM E SCHEDA CON BOTTONI PUBBLICATI CON SUCCESSO!")
+        print("✅ POST, LINK COMPLETI E BOTTONI PUBBLICATI CON SUCCESSO!")
     except Exception as e:
         print(f"❌ Errore durante l'invio: {e}")
 
