@@ -84,37 +84,51 @@ async def process_album(group_id):
         price_line = "Price: N/A"
 
         for line in source_text.split('\n'):
-            if 'article:' in line.lower():
-                article_line = line.strip()
-            elif 'price:' in line.lower():
-                price_line = line.strip()
+            clean_line = line.strip()
+            if 'article:' in clean_line.lower():
+                article_line = clean_line
+            elif 'price:' in clean_line.lower():
+                price_line = clean_line
 
+        # Estrazione intelligente del link del prodotto UsFans (evitando il link di registrazione)
         product_link = None
+        
+        # 1. Cerca prima nelle entità Telegram
         for entity in entities:
             if hasattr(entity, 'url') and entity.url:
-                if 'usfans' in entity.url.lower() or 'weidian' in entity.url.lower() or 'taobao' in entity.url.lower():
+                url_lower = entity.url.lower()
+                if 'usfans' in url_lower and 'register' not in url_lower:
                     product_link = entity.url
                     break
 
+        # 2. Se non trovato nelle entità, cerca nel testo con regex
         if not product_link:
             urls = re.findall(r'https?://[^\s]+', source_text)
             for u in urls:
-                if 'usfans' in u.lower() or 'weidian' in u.lower():
+                u_lower = u.lower()
+                if 'usfans' in u_lower and 'register' not in u_lower:
                     product_link = u
                     break
-            if not product_link and urls:
-                product_link = urls[0]
+            
+            # Se c'è un qualsiasi altro link valido (es. Weidian/Taobao), prendiamo quello come fallback
+            if not product_link:
+                for u in urls:
+                    if 'register' not in u.lower():
+                        product_link = u
+                        break
 
+        # Fallback finale se proprio non trova nulla
         if not product_link:
             product_link = "https://www.usfans.com"
 
+        # Pulizia e iniezione del codice affiliato sul link del prodotto
         product_link = re.sub(r'[\?&](ref|affcode)=[^&\s]+', '', product_link)
         if '?' in product_link:
             product_link += f'&affcode={AFFILIATE_TAG}'
         else:
             product_link += f'?affcode={AFFILIATE_TAG}'
 
-        # Formattazione esatta come nel tuo modello (senza bottoni, tutto testuale)
+        # Formattazione finale del messaggio
         final_text = (
             f"🎖️ **Official Spreadsheet** 🎖️\n"
             f"✈️ {article_line}\n"
@@ -138,7 +152,7 @@ async def process_album(group_id):
         else:
             await client.send_message(TARGET_CHAT, final_text, link_preview=False)
 
-        print("✅ ALBUM INVIATO CORRETTAMENTE (STILE MODELLO)!")
+        print("✅ ALBUM INVIATO CORRETTAMENTE CON LINK PRODOTTO CORRETTO!")
 
     except asyncio.CancelledError:
         pass
