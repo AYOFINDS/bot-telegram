@@ -39,104 +39,108 @@ client = TelegramClient(StringSession(STRING_SESSION), API_ID, API_HASH)
 
 SOURCE_CHATS = ["KakobuySpreadsheet6", -1003634367021, 3634367021]
 
-albums_buffer = {}
-
+posts_buffer = {}
 
 def fix_affiliate_link(url, tag=AFFILIATE_TAG):
-    """Sostituisce ref= o affcode= (qualsiasi valore) col nostro codice.
-    Se il link non ha nessuno dei due parametri, lo aggiunge come ref=."""
     if not url:
         return url
-
+    # Se è un link di un agent/store o usfans, puliamo e iniettiamo il tag
     new_url, count = re.subn(r'([?&])(ref|affcode)=[^&\s]+', rf'\1\2={tag}', url)
     if count > 0:
         return new_url
-
     separator = '&' if '?' in url else '?'
-    return f"{url}{separator}ref={tag}"
+    return f"{url}{separator}affcode={tag}"
 
-
-def find_usfans_link(entity_texts, source_text):
-    """Cerca tra i link del post quello relativo a Usfans.
-    1) Prima guarda l'URL delle entità (link markdown/testo cliccabile).
-    2) Se non trova nulla, fa un fallback su eventuali URL grezzi nel testo."""
-    for entity, text in entity_texts:
-        url = getattr(entity, 'url', None)
-        if url and 'usfans' in url.lower():
-            return url
-        if text and 'usfans' in text.lower() and url:
-            return url
-
-    # Fallback: URL scritti per esteso nel testo, vicino alla parola "usfans"
-    for line in source_text.split('\n'):
-        if 'usfans' in line.lower():
-            match = re.search(r'https?://[^\s]+', line)
-            if match:
-                return match.group(0)
-
-    # Fallback generale: prende il primo link disponibile nel testo se esiste
-    match_any = re.search(r'https?://[^\s]+', source_text)
-    if match_any:
-        return match_any.group(0)
-
-    return None
-
-
-@client.on(events.NewMessage(chats=SOURCE_CHATS))
+@client.on(events.NewMessage)
 async def handler(event):
     msg = event.message
-    group_id = msg.grouped_id if msg.grouped_id else f"single_{msg.id}"
+    chat = await event.get_chat()
+    chat_title = getattr(chat, 'title', getattr(chat, 'username', 'Chat privata'))
+    
+    target_sources = ["KakobuySpreadsheet6", -1003634367021, 3634367021]
+    is_valid = False
+    for src in target_sources:
+        if str(src) == str(event.chat_id) or (isinstance(src, str) and src.lower() in str(chat_title).lower()):
+            is_valid = True
+            break
 
-    if group_id not in albums_buffer:
-        albums_buffer[group_id] = {
-            'messages': [],
-            'caption': "",
-            'entity_texts': [],
+    if not is_valid:
+        return
+
+    # Usiamo il grouped_id se è un album, altrimenti l'id del messaggio (ma guardiamo anche i messaggi vicini)
+    post_key = msg.grouped_id if msg.grouped_id else msg.id
+
+    if post_key not in posts_buffer:
+        posts_buffer[post_key] = {
+            'media_list': [],
+            'raw_text': "",
+            'entities': [],
             'timer': None
         }
 
-    albums_buffer[group_id]['messages'].append(msg)
+    if msg.media:
+        posts_buffer[post_key]['media_list'].append(msg)
+        cap = getattr(msg, 'caption', '') or ''
+        if cap:
+            posts_buffer[post_key]['raw_text'] = cap
+            posts_buffer[post_key]['entities'] = msg.caption_entities or []
 
-    cap = getattr(msg, 'caption', '') or getattr(msg, 'text', '') or ''
-    if cap:
-        albums_buffer[group_id]['caption'] = cap
-        try:
-            albums_buffer[group_id]['entity_texts'] = msg.get_entities_text()
-        except Exception:
-            albums_buffer[group_id]['entity_texts'] = []
+    if msg.text:
+        posts_buffer[post_key]['raw_text'] = msg.text
+        posts_buffer[post_key]['entities'] = msg.entities or []
+        
+        # Cerca di accoppiare il testo ai messaggi vicini se arrivano separati
+        for offset in [-1, 0, 1]:
+            neighbor_key = (msg.id + offset) if not msg.grouped_id else post_key
+            if neighbor_key in posts_buffer and not posts_buffer[neighbor_key]['raw_text']:
+                posts_buffer[neighbor_key]['raw_text'] = msg.text
+                posts_buffer[neighbor_key]['entities'] = msg.entities or []
 
-    if albums_buffer[group_id]['timer']:
-        albums_buffer[group_id]['timer'].cancel()
+    if posts_buffer[post_key]['timer']:
+        posts_buffer[post_key]['timer'].cancel()
 
-    albums_buffer[group_id]['timer'] = asyncio.create_task(process_album(group_id))
+    posts_buffer[post_key]['timer'] = asyncio.create_task(process_post(post_key))
 
-
-async def process_album(group_id):
+async def process_post(post_key):
     try:
-        await asyncio.sleep(3.0)
-
-        data = albums_buffer.pop(group_id, None)
+        await asyncio.sleep(4.0) # Aspettiamo 4 secondi per raccogliere foto e testo insieme
+        
+        data = posts_buffer.pop(post_key, None)
         if not data:
             return
 
-        messages = data['messages']
-        source_text = data['caption']
-        entity_texts = data['entity_texts']
+        media_list = data['media_list']
+        source_text = data['raw_text']
+        entities = data['entities']
 
-        print(f"🚨 ELABORAZIONE ALBUM: {len(messages)} elementi trovati.")
+        print(f"🚨 ELABORAZIONE POST [Key: {post_key}]: {len(media_list)} foto, Testo: {bool(source_text)}")
 
         article_line = "Article: Prodotto Esclusivo"
         price_line = "Price: N/A"
 
         for line in source_text.split('\n'):
-            if 'article:' in line.lower():
-                article_line = line.strip()
-            elif 'price:' in line.lower():
-                price_line = line.strip()
+            clean_line = line.strip()
+            if 'article:' in clean_line.lower():
+                article_line = clean_line
+            elif 'price:' in clean_line.lower():
+                price_line = clean_line
 
-        product_link = find_usfans_link(entity_texts, source_text)
+        # Estrazione intelligente del link del prodotto dal testo o dalle entità
+        product_link = None
+        for entity in entities:
+            if hasattr(entity, 'url') and entity.url:
+                url_lower = entity.url.lower()
+                if 'register' not in url_lower: # Evitiamo il link di registrazione
+                    product_link = entity.url
+                    break
 
-        # Se non trova alcun link, usa la home di usfans come fallback sicuro
+        if not product_link:
+            urls = re.findall(r'https?://[^\s]+', source_text)
+            for u in urls:
+                if 'register' not in u.lower():
+                    product_link = u
+                    break
+
         if not product_link:
             product_link = "https://www.usfans.com"
 
@@ -144,13 +148,15 @@ async def process_album(group_id):
 
         final_text = (
             f"🎖️ **Official Spreadsheet** 🎖️\n"
-            f"🔍 {article_line}\n"
-            f"💰 {price_line}\n\n"
-            f"🔗 [UsFans]({product_link})\n"
-            f"✍️ [Register UsFans Here ($820 Coupon)]({LINK_SCONTO}) ✍️"
+            f"✈️ {article_line}\n"
+            f"💰 {price_line}\n"
+            f"🚚 **Agents:**\n"
+            f"🔗 [UsFans]({product_link})\n\n"
+            f"✍️ [Register UsFans Here ($820 Coupon)]({LINK_SCONTO}) ✍️\n"
+            f"🚨 **Warm Risk Reminder Popup** 🚨"
         )
 
-        media_messages = [m for m in messages if m.media]
+        media_messages = [m for m in media_list if m.media]
         media_messages.sort(key=lambda x: x.id)
 
         tasks = [download_media_safe(m, idx) for idx, m in enumerate(media_messages)]
@@ -163,13 +169,12 @@ async def process_album(group_id):
         else:
             await client.send_message(TARGET_CHAT, final_text, link_preview=False)
 
-        print("✅ ALBUM INVIATO CORRETTAMENTE!")
+        print("✅ POST INVIATO CORRETTAMENTE CON DATI E LINK REALE!")
 
     except asyncio.CancelledError:
         pass
     except Exception as e:
-        print(f"❌ Errore durante l'invio dell'album: {e}")
-
+        print(f"❌ Errore durante l'invio: {e}")
 
 async def download_media_safe(m, idx):
     if not m.media:
@@ -184,7 +189,6 @@ async def download_media_safe(m, idx):
         print(f"⚠️ Errore download foto {idx}: {e}")
     return None
 
-
 async def main():
     while True:
         try:
@@ -198,7 +202,6 @@ async def main():
         except Exception as e:
             print(f"❌ Errore imprevisto: {e}")
             await asyncio.sleep(10)
-
 
 if __name__ == '__main__':
     t = Thread(target=run_flask)
