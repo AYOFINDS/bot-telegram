@@ -51,7 +51,7 @@ def get_product_emoji(title: str) -> str:
         return "👕"
     elif any(k in t for k in ['pants', 'shorts', 'trousers', 'pantaloni', 'jeans']):
         return "👖"
-    elif any(k in t for k in ['bag', 'backpack', 'borsa', 'zaino', 'wallet']):
+    elif any(k in t for k in ['bag', 'backpack', 'borsa', 'zaino', 'wallet', 'louis']):
         return "👜"
     return "🛍️"
 
@@ -69,7 +69,8 @@ async def handler(event):
         await forward_post([message])
 
 async def process_album(gid):
-    await asyncio.sleep(2.0)
+    # Attesa di 3.5 secondi per recuperare tutte le foto dell'album prima di elaborare
+    await asyncio.sleep(3.5)
     messages = media_groups.pop(gid, [])
     if messages:
         await forward_post(messages)
@@ -78,41 +79,45 @@ async def download_single_media(m, idx):
     if not m.media:
         return None
     try:
-        file_bytes = await asyncio.wait_for(user_client.download_media(m.media, file=bytes), timeout=10.0)
+        file_bytes = await asyncio.wait_for(user_client.download_media(m.media, file=bytes), timeout=12.0)
         if file_bytes:
             bio = io.BytesIO(file_bytes)
             bio.name = f"photo_{idx}.jpg"
             return bio
     except Exception as e:
-        print(f"⚠️ Errore/Timeout download foto {idx}: {e}")
+        print(f"⚠️ Errore download foto {idx}: {e}")
     return None
 
 async def forward_post(messages):
     print(f"🚨 ELABORAZIONE POST ({len(messages)} elementi)...")
     
+    # Cerca il testo originale scavando in tutti i messaggi ricevuti dell'album
     full_text = ""
     entities = []
+    
     for m in messages:
-        if m.text:
+        if m.text and len(m.text.strip()) > 0:
             full_text = m.text
             entities = m.entities or []
             break
 
-    if not full_text and len(messages) > 1:
-        # Se è un album senza testo su nessuna foto, usa la prima disponibile
-        full_text = ""
+    # Se non c'è testo in nessuno dei messaggi dell'album, ignora (evita invii vuoti)
+    if not full_text:
+        print("❌ Nessun testo trovato nell'album. Interruzione.")
+        return
 
+    # Estrazione Titolo
     title = "Prodotto Esclusivo"
-    price = "N/A"
-
     title_match = re.search(r'(?:Article|Product|Titolo|Prodotto):\s*(.*)', full_text, re.IGNORECASE)
     if title_match:
         title = title_match.group(1).strip()
     else:
-        lines = [line.strip() for line in full_text.split('\n') if line.strip()]
+        lines = [l.strip() for l in full_text.split('\n') if l.strip()]
         if lines:
             title = lines[0]
 
+    # Estrazione Prezzo
+    price = "N/A"
     price_match = re.search(r'(?:Price|Prezzo):\s*([€$]?\s*\d+[\.,]?\d*)', full_text, re.IGNORECASE)
     if price_match:
         price = price_match.group(1).strip().replace('€', '').replace('$', '')
@@ -123,13 +128,13 @@ async def forward_post(messages):
 
     emoji = get_product_emoji(title)
 
+    # Estrazione Link Prodotto (USFans / Kakobuy / URL generico nel post)
     usfans_link = None
     if entities:
         for entity in entities:
             if hasattr(entity, 'url') and entity.url:
-                if any(k in entity.url.lower() for k in ['usfans', 'kakobuy', 'http']):
-                    usfans_link = entity.url
-                    break
+                usfans_link = entity.url
+                break
 
     if not usfans_link:
         urls = re.findall(r'https?://[^\s]+', full_text)
@@ -139,6 +144,7 @@ async def forward_post(messages):
     if not usfans_link:
         usfans_link = "https://usfans.com"
 
+    # Aggiornamento Tag Affiliato
     if 'affcode=' in usfans_link:
         usfans_link = re.sub(r'(affcode=)[^&\s]+', f'affcode={AFFILIATE_TAG}', usfans_link)
     elif '?' in usfans_link:
@@ -161,18 +167,23 @@ async def forward_post(messages):
     try:
         messages.sort(key=lambda m: m.id)
         
-        # Download in parallelo ultra veloce con Timeout
+        # Download in parallelo di tutte le foto dell'album
         tasks = [download_single_media(m, idx) for idx, m in enumerate(messages)]
         downloaded = await asyncio.gather(*tasks)
         image_files = [f for f in downloaded if f is not None]
 
         if image_files:
-            await bot_client.send_file(TARGET_CHAT, image_files)
-            await bot_client.send_message(TARGET_CHAT, new_text, buttons=buttons)
+            # Invia l'album completo delle foto CON la didascalia (caption) e i pulsanti legati direttamente alle foto
+            await bot_client.send_file(
+                TARGET_CHAT, 
+                image_files, 
+                caption=new_text, 
+                buttons=buttons
+            )
         else:
             await bot_client.send_message(TARGET_CHAT, new_text, buttons=buttons)
             
-        print("✅ POST PUBBLICATO CON SUCCESSO IN POCHI SECONDI!")
+        print("✅ ALBUM E SCHEDA PRODOTTO PUBBLICATI CON SUCCESSO!")
     except Exception as e:
         print(f"❌ Errore durante l'invio: {e}")
 
