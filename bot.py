@@ -28,7 +28,6 @@ raw_target = os.environ.get("TARGET_CHAT", "").strip()
 TARGET_CHAT = int(raw_target) if raw_target.lstrip('-').isdigit() else raw_target
 
 AFFILIATE_TAG = os.environ.get("AFFILIATE_TAG", "U2CC3E")
-# Link d'iscrizione diretto con il tuo codice referral
 LINK_SCONTO = "https://usfans.com/register?ref=U2CC3E"
 
 user_client = TelegramClient(StringSession(STRING_SESSION), API_ID, API_HASH)
@@ -70,7 +69,8 @@ async def handler(event):
         await forward_post([message])
 
 async def process_album(gid):
-    await asyncio.sleep(3.5)
+    # Aumentato il tempo di attesa a 7 secondi per permettere la ricezione del testo dell'album
+    await asyncio.sleep(7.0)
     messages = media_groups.pop(gid, [])
     if messages:
         await forward_post(messages)
@@ -79,7 +79,7 @@ async def download_single_media(m, idx):
     if not m.media:
         return None
     try:
-        file_bytes = await asyncio.wait_for(user_client.download_media(m.media, file=bytes), timeout=12.0)
+        file_bytes = await asyncio.wait_for(user_client.download_media(m.media, file=bytes), timeout=15.0)
         if file_bytes:
             bio = io.BytesIO(file_bytes)
             bio.name = f"photo_{idx}.jpg"
@@ -92,17 +92,21 @@ async def forward_post(messages):
     print(f"🚨 ELABORAZIONE POST ({len(messages)} elementi)...")
     
     text_msg = None
+    full_text = ""
+    entities = []
+
+    # Cerca il testo isolando tutti i tipi di contenuto del messaggio
     for m in messages:
-        if m.text and len(m.text.strip()) > 0:
+        candidate_text = m.text or m.message or m.raw_text or ""
+        if len(candidate_text.strip()) > 0:
             text_msg = m
+            full_text = candidate_text
+            entities = m.entities or []
             break
 
-    if not text_msg:
+    if not full_text:
         print("❌ Nessun testo trovato nell'album. Interruzione.")
         return
-
-    full_text = text_msg.text
-    entities = text_msg.entities or []
 
     # 1. Estrazione Titolo e Prezzo
     article_match = re.search(r'Article:\s*(.*)', full_text, re.IGNORECASE)
@@ -113,7 +117,7 @@ async def forward_post(messages):
 
     emoji = get_product_emoji(article_val)
 
-    # 2. Estrazione Link USFans del singolo prodotto
+    # 2. Estrazione Link USFans
     usfans_link = None
     
     for entity in entities:
@@ -135,7 +139,7 @@ async def forward_post(messages):
     if not usfans_link:
         usfans_link = "https://www.usfans.com"
 
-    # Rimuove il vecchio ref o affcode ed estende con il tuo affcode
+    # Clean & Affiliato
     usfans_link = re.sub(r'[\?&](ref|affcode)=[^&\s]+', '', usfans_link)
     
     if '?' in usfans_link:
@@ -150,7 +154,6 @@ async def forward_post(messages):
         f"🔥 **Batch:** Qualità e dettagli top"
     )
 
-    # Configurazione bottoni con il tuo link iscrizione
     buttons = [
         [Button.url("🛒 ACQUISTA PRODOTTO", usfans_link)],
         [Button.url("🎁 ISCRIVITI + 40% DI SCONTO", LINK_SCONTO)]
