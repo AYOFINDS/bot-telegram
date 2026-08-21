@@ -33,34 +33,15 @@ client = TelegramClient(StringSession(STRING_SESSION), API_ID, API_HASH)
 
 SOURCE_CHATS = ["KakobuySpreadsheet6", -1003634367021, 3634367021]
 
-# Dizionari di accumulo sicuri
 pending_albums = {}
 pending_texts = {}
-
-def get_product_emoji(title: str) -> str:
-    t = title.lower()
-    if any(k in t for k in ['shoe', 'sneaker', 'campus', 'jordan', 'dunk', 'yeezy', 'nike', 'adidas', 'air max', 'travis', 'running', 'slide', 'foam', 'saint laurent']):
-        return "👟"
-    elif any(k in t for k in ['cap', 'hat', 'berretto', 'cappellino']):
-        return "🧢"
-    elif any(k in t for k in ['watch', 'orologio', 'rolex']):
-        return "⌚"
-    elif any(k in t for k in ['hoodie', 'jacket', 'zipper', 'felpa', 'giacca', 'coat', 'fleece', 'puffer']):
-        return "🧥"
-    elif any(k in t for k in ['tee', 't-shirt', 'shirt', 'maglietta']):
-        return "👕"
-    elif any(k in t for k in ['pants', 'shorts', 'trousers', 'pantaloni', 'jeans']):
-        return "👖"
-    elif any(k in t for k in ['bag', 'backpack', 'borsa', 'zaino', 'wallet', 'louis']):
-        return "👜"
-    return "🛍️"
 
 @client.on(events.NewMessage(chats=SOURCE_CHATS))
 async def handler(event):
     msg = event.message
     chat_id = event.chat_id
 
-    # Se fa parte di un album
+    # Se fa parte di un album, raccogliamo tutte le foto
     if msg.grouped_id:
         gid = msg.grouped_id
         if gid not in pending_albums:
@@ -72,33 +53,30 @@ async def handler(event):
         
         pending_albums[gid]['messages'].append(msg)
         
-        # Resetta il timer ad ogni nuova foto dell'album che arriva
         if pending_albums[gid]['timer']:
             pending_albums[gid]['timer'].cancel()
             
         pending_albums[gid]['timer'] = asyncio.create_task(process_album_delayed(gid))
 
-    # Se è un messaggio di testo con i dettagli del prodotto
-    elif msg.text and ("Article:" in msg.text or "Price:" in msg.text):
+    # Se è il messaggio di testo con i dettagli (articolo, prezzo e link)
+    elif msg.text and ("Article:" in msg.text or "Price:" in msg.text or "spreadsheet" in msg.text.lower()):
         pending_texts[chat_id] = msg
 
-    # Foto singola senza album
+    # Se è una foto singola senza album
     elif msg.media:
-        await finalize_and_send([msg], None)
+        await process_and_forward([msg], None)
 
 async def process_album_delayed(gid):
     try:
-        # Aspetta 5 secondi per raccogliere tutte le foto dell'album
+        # Aspettiamo 5 secondi per essere sicuri di aver ricevuto tutte le foto dell'album
         await asyncio.sleep(5.0)
         data = pending_albums.pop(gid, None)
         if data:
             chat_id = data['chat_id']
             messages = data['messages']
-            
-            # Preleva il testo associato a questo canale arrivato poco prima o poco dopo
             text_msg = pending_texts.pop(chat_id, None)
             
-            await finalize_and_send(messages, text_msg)
+            await process_and_forward(messages, text_msg)
     except asyncio.CancelledError:
         pass
 
@@ -112,93 +90,77 @@ async def download_media_safe(m, idx):
             bio.name = f"photo_{idx}.jpg"
             return bio
     except Exception as e:
-        print(f"⚠️ Errore download media {idx}: {e}")
+        print(f"⚠️ Errore download foto {idx}: {e}")
     return None
 
-async def finalize_and_send(media_list, text_msg):
+async def process_and_forward(media_list, text_msg):
     print(f"🚨 ELABORAZIONE POST: {len(media_list)} foto trovate.")
     
-    full_text = ""
+    source_text = ""
     entities = []
 
-    # Estrae il testo sia dalle didascalie dei media che dal messaggio di testo separato
-    for m in media_list:
-        cap = getattr(m, 'caption', '') or ''
-        if cap:
-            full_text += f"\n{cap}"
-            if m.caption_entities:
-                entities.extend(m.caption_entities)
-
+    # Recupera il testo dal messaggio separato o dalle didascalie
     if text_msg:
-        txt = getattr(text_msg, 'text', '') or ''
-        if txt:
-            full_text += f"\n{txt}"
-            if text_msg.entities:
-                entities.extend(text_msg.entities)
+        source_text = getattr(text_msg, 'text', '') or getattr(text_msg, 'message', '') or ""
+        entities = text_msg.entities or []
+    else:
+        for m in media_list:
+            cap = getattr(m, 'caption', '') or ""
+            if cap:
+                source_text = cap
+                entities = m.caption_entities or []
+                break
 
-    # Parsing pulito di articolo e prezzo
-    article_match = re.search(r'Article:\s*(.*)', full_text, re.IGNORECASE)
-    price_match = re.search(r'Price:\s*(.*)', full_text, re.IGNORECASE)
+    # Se per qualche motivo il testo è vuoto, prendiamo un fallback pulito
+    if not source_text:
+        source_text = "💯 Latest spreadsheet 💯\n🔍 Article: Prodotto Esclusivo\n💰 Price: N/A"
 
-    article_val = article_match.group(1).strip() if article_match else "Prodotto Esclusivo"
-    article_val = re.sub(r'<[^>]*>', '', article_val).split('\n')[0].strip()
-
-    price_val = price_match.group(1).strip() if price_match else "N/A"
-    price_val = re.sub(r'<[^>]*>', '', price_val).split('\n')[0].strip()
-
-    # Ricerca del link Usfans o link di riferimento nel messaggio
-    usfans_link = None
+    # Estrazione del link del prodotto originale (cerca Usfans o qualsiasi link http presente)
+    product_link = None
     for entity in entities:
         if hasattr(entity, 'url') and entity.url:
             if 'usfans' in entity.url.lower():
-                usfans_link = entity.url
+                product_link = entity.url
                 break
 
-    if not usfans_link:
+    if not product_link:
         for entity in entities:
             if hasattr(entity, 'url') and entity.url and entity.url.startswith("http"):
-                usfans_link = entity.url
+                product_link = entity.url
                 break
 
-    if not usfans_link:
-        usfans_link = "https://www.usfans.com"
+    if not product_link:
+        product_link = "https://www.usfans.com"
 
-    emoji = get_product_emoji(article_val)
-
-    # Pulizia e formattazione link affiliato
-    usfans_link = re.sub(r'[\?&](ref|affcode)=[^&\s]+', '', usfans_link)
-    if '?' in usfans_link:
-        usfans_link += f'&affcode={AFFILIATE_TAG}'
+    # Pulisce i vecchi parametri di affiliazione e applica il tuo tag corretto
+    product_link = re.sub(r'[\?&](ref|affcode)=[^&\s]+', '', product_link)
+    if '?' in product_link:
+        product_link += f'&affcode={AFFILIATE_TAG}'
     else:
-        usfans_link += f'?affcode={AFFILIATE_TAG}'
+        product_link += f'?affcode={AFFILIATE_TAG}'
 
-    new_text = (
-        f"{emoji} **Article: {article_val}**\n"
-        f"💰 **Price: {price_val}**\n\n"
-        f"🎁 **BONUS BENVENUTO:** Usa i tuoi coupon per risparmiare fino al 40% sul tuo ordine!\n"
-        f"🔥 **Batch:** Qualità e dettagli top"
-    )
-
+    # Pulsanti richiesti
     buttons = [
-        [Button.url("🛒 ACQUISTA PRODOTTO", usfans_link)],
+        [Button.url("🛒 ACQUISTA PRODOTTO", product_link)],
         [Button.url("🎁 ISCRIVITI + 40% DI SCONTO", LINK_SCONTO)]
     ]
 
     try:
-        # Ordina i media per ID corretto
         media_list.sort(key=lambda x: x.id)
         
+        # Scarica TUTTE le foto dell'album
         tasks = [download_media_safe(m, idx) for idx, m in enumerate(media_list)]
         downloaded = await asyncio.gather(*tasks)
         image_files = [f for f in downloaded if f is not None]
 
         if image_files:
+            # Invia tutte le foto insieme e poi il testo con i bottoni
             await client.send_file(TARGET_CHAT, image_files)
-            await client.send_message(TARGET_CHAT, new_text, buttons=buttons)
+            await client.send_message(TARGET_CHAT, source_text, buttons=buttons)
         else:
-            await client.send_message(TARGET_CHAT, new_text, buttons=buttons)
+            await client.send_message(TARGET_CHAT, source_text, buttons=buttons)
             
-        print("✅ POST INVIATO PERFETTAMENTE CON TUTTE LE FOTO E TESTO!")
+        print("✅ POST INVIATO CORRETTAMENTE!")
     except Exception as e:
         print(f"❌ Errore durante l'invio: {e}")
 
