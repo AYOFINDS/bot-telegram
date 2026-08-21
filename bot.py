@@ -105,19 +105,34 @@ async def process_post(key):
         elif 'price:' in clean.lower():
             price_line = clean
 
-    # Estrai link prodotto (escludi register)
+    # ---------- ESTRAZIONE LINK PRODOTTO (MIGLIORATA) ----------
     product_link = None
+
+    # 1) Prima cerca tra le entities (link cliccabili)
     for entity in entities:
         if hasattr(entity, 'url') and entity.url:
-            if 'register' not in entity.url.lower():
-                product_link = entity.url
-                break
+            url_lower = entity.url.lower()
+            # Escludi link di registrazione
+            if 'register' not in url_lower:
+                # Priorità assoluta ai link che contengono "usfans.com/product"
+                if 'usfans.com/product' in url_lower:
+                    product_link = entity.url
+                    break
+                elif product_link is None:
+                    product_link = entity.url
+
+    # 2) Se non trovato, cerca con regex in tutto il testo
     if not product_link:
         urls = re.findall(r'https?://[^\s]+', source_text)
         for u in urls:
             if 'register' not in u.lower():
-                product_link = u
-                break
+                if 'usfans.com/product' in u.lower():
+                    product_link = u
+                    break
+                elif product_link is None:
+                    product_link = u
+
+    # 3) Fallback
     if not product_link:
         product_link = "https://www.usfans.com"
 
@@ -229,8 +244,8 @@ async def handler(event):
         # Se non trovato, crea un nuovo buffer per l'album
         new_buffer = {
             'media_list': [msg],
-            'text': msg.text or "",           # <-- CORRETTO: usiamo msg.text
-            'entities': msg.entities or [],   # <-- CORRETTO: usiamo msg.entities
+            'text': msg.text or "",
+            'entities': msg.entities or [],
             'timer': None,
             'timestamp': now,
             'chat_id': chat_id
