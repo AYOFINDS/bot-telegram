@@ -3,7 +3,6 @@ import threading
 import logging
 import sqlite3
 import asyncio
-import time
 from datetime import datetime
 from flask import Flask
 from waitress import serve
@@ -19,12 +18,12 @@ api_hash = os.environ.get("API_HASH", "YOUR_API_HASH")
 bot_token = os.environ.get("BOT_TOKEN", "YOUR_BOT_TOKEN")
 port = int(os.environ.get("PORT", "8000"))
 
-# ID Admin (Sostituisci con il tuo ID Telegram)
+# Inserisci qui il tuo vero ID Telegram
 ADMIN_IDS = [123456789] 
 DB_PATH = "bot_database.db"
 
-# --- INIZIALIZZAZIONE CLIENT, FLASK E DB (PRIMA DI TUTTO PER EVITARE ERRORI) ---
-client = TelegramClient("bot_session", api_id, api_hash).start(bot_token=bot_token)
+# --- INIZIALIZZAZIONE CLIENT E FLASK ---
+client = TelegramClient("bot_session", api_id, api_hash)
 app = Flask(__name__)
 
 # --- GESTIONE DATABASE (SQLite) ---
@@ -116,7 +115,7 @@ async def broadcast(event):
     for user in users:
         try:
             await client.send_message(user[0], msg)
-            await asyncio.sleep(0.5)  # Pausa per non essere bannati
+            await asyncio.sleep(0.5)
         except:
             pass
 
@@ -149,46 +148,35 @@ async def callback(event):
     elif event.data == b"altro":
         await event.answer("Funzione in sviluppo!")
 
-# --- GESTIONE MESSAGGI NORMALI (La Tua Vecchia Funzione Complessa) ---
+# --- GESTIONE MESSAGGI NORMALI ---
 @client.on(events.NewMessage)
 async def onNewMessage(event):
-    if event.out: return  # Ignora i messaggi inviati dal bot stesso
+    if event.out: 
+        return
 
-    # Salva utente nel DB
     save_user(event.sender_id, event.sender.first_name)
-
     testo = event.raw_text.lower()
 
-    # Logica testuale complessa
     if "ciao" in testo:
         await event.reply("Ciao! Come stai oggi? 😄")
     elif "come stai" in testo:
         await event.reply("Sto molto bene, grazie! Il server è stabile e il database funziona.")
-    
-    # Gestione media (immagini, video, documenti)
     elif event.photo:
         await event.reply("📸 Bella foto! L'ho salvata.")
-        # Logica per salvare la foto su disco o su un bucket
-    
     elif event.document:
         await event.reply("📄 Ho ricevuto il tuo file. Lo sto processando...")
-        # Logica di download e processamento file
-    
     elif event.message.sticker:
         await event.reply("😆 Bello sticker!")
-    
-    # Fallback / Comando sconosciuto
     else:
-        # Usa event.client invece della variabile globale per la massima sicurezza
         await event.client.send_message(
             event.chat_id, 
             f"Non ho capito il comando: {testo}.\nUsa /help per la lista dei comandi."
         )
 
-# --- TASK ASINCRONI (Es. invio messaggio programmato ogni giorno) ---
+# --- TASK ASINCRONI ---
 async def daily_task():
     while True:
-        await asyncio.sleep(86400)  # 24 ore
+        await asyncio.sleep(86400)
         now = datetime.now()
         if now.hour == 9:
             await client.send_message(ADMIN_IDS[0], "☀️ Buongiorno! Questo è il messaggio automatico giornaliero.")
@@ -199,18 +187,17 @@ def run_flask():
     serve(app, host='0.0.0.0', port=port)
 
 # --- MAIN ---
+async def main():
+    await client.start(bot_token=bot_token)
+    logger.info("Avvio del Bot Telegram...")
+    client.loop.create_task(daily_task())
+    await client.run_until_disconnected()
+
 if __name__ == "__main__":
     threading.Thread(target=run_flask, daemon=True).start()
-    
-    # Avvia il task periodico
-    loop = client.loop
-    loop.create_task(daily_task())
-
-    logger.info("Avvio del Bot Telegram...")
     try:
-        client.run_until_disconnected()
+        asyncio.run(main())
     except KeyboardInterrupt:
         print("Bot fermato manualmente.")
     except Exception as e:
         logger.error(f"Errore critico: {e}")
-        client.disconnect()
