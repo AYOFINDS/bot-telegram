@@ -26,21 +26,35 @@ raw_target = os.environ.get("TARGET_CHAT", "").strip()
 TARGET_CHAT = int(raw_target) if raw_target.lstrip('-').isdigit() else raw_target
 
 AFFILIATE_TAG = os.environ.get("AFFILIATE_TAG")
-
-# ID NUMERICO DEL CANALE SORGENTE
-SOURCE_CHANNEL = -1003634367021
-
 LINK_SCONTO = "https://t.me/+DiuD1AbxY8thYzg0"
+
+# Username del canale sorgente
+SOURCE_USERNAME = "KakobuySpreadsheet6"
 
 client = TelegramClient(StringSession(STRING_SESSION), API_ID, API_HASH)
 
-@client.on(events.NewMessage(chats=SOURCE_CHANNEL))
+@client.on(events.NewMessage)
 async def handler(event):
-    # Se il messaggio fa parte di un album e non contiene testo, saltalo per evitare duplicati
+    # Filtra solo i messaggi provenienti dal canale sorgente desiderato
+    chat = await event.get_chat()
+    chat_id = event.chat_id
+    chat_username = getattr(chat, 'username', '') or ''
+
+    # Verifica se il messaggio proviene da KakobuySpreadsheet6 o dall'ID -1003634367021
+    is_source = (
+        chat_username.lower() == SOURCE_USERNAME.lower() or 
+        chat_id == -1003634367021 or 
+        str(chat_id) == "-1003634367021"
+    )
+
+    if not is_source:
+        return
+
+    # Se fa parte di un album di foto e non ha testo, salta per evitare duplicati
     if event.message.grouped_id and not event.message.text:
         return
 
-    print("Nuovo messaggio intercettato!")
+    print("Messaggio sorgente intercettato!")
     message = event.message
     text = message.text or ""
 
@@ -51,7 +65,7 @@ async def handler(event):
     title = article_match.group(1).strip() if article_match else "Prodotto Esclusivo"
     price = price_match.group(1).strip() if price_match else "N/A"
 
-    # Estrazione del Link Usfans dalle entity del messaggio
+    # Estrazione Link Usfans
     usfans_link = None
     if message.entities:
         for entity in message.entities:
@@ -75,7 +89,6 @@ async def handler(event):
     else:
         usfans_link += f'?affcode={AFFILIATE_TAG}'
 
-    # Testo del messaggio formattato
     new_text = (
         f"🧢 **{title}**\n"
         f"💰 **Prezzo: {price}€**\n\n"
@@ -93,7 +106,7 @@ async def handler(event):
             await client.send_file(TARGET_CHAT, message.media, caption=new_text, buttons=buttons)
         else:
             await client.send_message(TARGET_CHAT, new_text, buttons=buttons)
-        print("Inoltrato con successo nel canale target!")
+        print("Messaggio inviato sul canale target!")
     except Exception as e:
         print(f"Errore durante l'invio: {e}")
 
@@ -101,7 +114,7 @@ if __name__ == '__main__':
     t = Thread(target=run_flask)
     t.daemon = True
     t.start()
-    print("Bot avviato e sincronizzato con l'ID sorgente!")
+    print("Bot avviato e pronto!")
 
     client.start()
     client.run_until_disconnected()
