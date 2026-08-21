@@ -41,7 +41,7 @@ LINK_SCONTO = f"https://www.usfans.com/register?ref={AFFILIATE_TAG}"
 # Canali sorgente: username o ID (con -100 per supergruppi)
 SOURCE_CHATS = ["KakobuySpreadsheet6", -1003634367021, 3634367021]
 
-# ------------------------ Client Telethon -------------------------
+# ------------------------ Crea il client QUI (prima del decoratore) -------------------------
 client = TelegramClient(StringSession(STRING_SESSION), API_ID, API_HASH)
 
 # ------------------------ Buffer Globale -------------------------
@@ -229,8 +229,8 @@ async def handler(event):
         # Se non trovato, crea un nuovo buffer per l'album
         new_buffer = {
             'media_list': [msg],
-            'text': msg.caption or "",
-            'entities': msg.caption_entities or [],
+            'text': msg.text or "",           # <-- CORRETTO: usiamo msg.text
+            'entities': msg.entities or [],   # <-- CORRETTO: usiamo msg.entities
             'timer': None,
             'timestamp': now,
             'chat_id': chat_id
