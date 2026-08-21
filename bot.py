@@ -6,7 +6,7 @@ from threading import Thread
 from telethon import TelegramClient, events, Button
 from telethon.sessions import StringSession
 
-# 1. Server Flask per Railway
+# 1. Server Web per Railway
 app = Flask(__name__)
 
 @app.route('/')
@@ -17,7 +17,7 @@ def run_flask():
     port = int(os.environ.get("PORT", 8080))
     app.run(host="0.0.0.0", port=port)
 
-# 2. Recupero Variabili
+# 2. Configurazione Variabili
 API_ID = int(os.environ.get("API_ID"))
 API_HASH = os.environ.get("API_HASH")
 STRING_SESSION = os.environ.get("STRING_SESSION")
@@ -28,35 +28,29 @@ TARGET_CHAT = int(raw_target) if raw_target.lstrip('-').isdigit() else raw_targe
 AFFILIATE_TAG = os.environ.get("AFFILIATE_TAG")
 LINK_SCONTO = "https://t.me/+DiuD1AbxY8thYzg0"
 
-# Inizializzazione Client Utente (Telethon User)
 client = TelegramClient(StringSession(STRING_SESSION), API_ID, API_HASH)
 
-@client.on(events.NewMessage)
-async def handler(event):
-    chat_id = event.chat_id
-    
-    # Intercetta sia l'ID numerico che l'username
-    if chat_id != -1003634367021 and chat_id != 3634367021:
-        chat = await event.get_chat()
-        username = getattr(chat, 'username', '') or ''
-        if username.lower() != "kakobuyspreadsheet6":
-            return
+# Ascolta direttamente l'username del canale sorgente
+SOURCE_CHANNEL = "KakobuySpreadsheet6"
 
-    # Evita duplicati dagli album di foto
+@client.on(events.NewMessage(chats=SOURCE_CHANNEL))
+async def handler(event):
+    # Ignora le foto secondarie degli album (tiene solo il testo principale)
     if event.message.grouped_id and not event.message.text:
         return
 
-    print("✅ Messaggio sorgente intercettato con successo!")
+    print("🚨 NUOVO MESSAGGIO TROVATO NEL CANALE SORGENTE!")
     message = event.message
     text = message.text or ""
 
-    # Estrazione Dati
+    # Estrazione Titolo e Prezzo
     article_match = re.search(r'Article:\s*(.*)', text)
     price_match = re.search(r'Price:\s*(.*)', text)
 
     title = article_match.group(1).strip() if article_match else "Prodotto Esclusivo"
     price = price_match.group(1).strip() if price_match else "N/A"
 
+    # Estrazione Link Usfans
     usfans_link = None
     if message.entities:
         for entity in message.entities:
@@ -72,7 +66,7 @@ async def handler(event):
     if not usfans_link:
         usfans_link = "https://usfans.com"
 
-    # Inserimento Tag Affiliato
+    # Applicazione Tag Affiliato
     if 'affcode=' in usfans_link:
         usfans_link = re.sub(r'(affcode=)[^&\s]+', f'affcode={AFFILIATE_TAG}', usfans_link)
     elif '?' in usfans_link:
@@ -80,6 +74,7 @@ async def handler(event):
     else:
         usfans_link += f'?affcode={AFFILIATE_TAG}'
 
+    # Testo del messaggio
     new_text = (
         f"🧢 **{title}**\n"
         f"💰 **Prezzo: {price}€**\n\n"
@@ -97,7 +92,7 @@ async def handler(event):
             await client.send_file(TARGET_CHAT, message.media, caption=new_text, buttons=buttons)
         else:
             await client.send_message(TARGET_CHAT, new_text, buttons=buttons)
-        print("🚀 Inoltrato nel canale destinazione!")
+        print("✅ MESSAGGIO INVIATO SUL TUO CANALE!")
     except Exception as e:
         print(f"❌ Errore durante l'invio: {e}")
 
@@ -105,7 +100,7 @@ if __name__ == '__main__':
     t = Thread(target=run_flask)
     t.daemon = True
     t.start()
-    
-    print("🤖 Bot avviato correttamente con la Sessione Utente!")
+
+    print("🤖 Bot collegato a KakobuySpreadsheet6 e in ascolto!")
     client.start()
     client.run_until_disconnected()
