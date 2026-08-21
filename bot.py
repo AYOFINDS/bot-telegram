@@ -1,79 +1,3 @@
-import os
-import re
-import asyncio
-from flask import Flask
-from threading import Thread
-from telethon import TelegramClient, events, Button
-from telethon.sessions import StringSession
-
-# 1. Server Web per Keep-Alive su Railway
-app = Flask(__name__)
-
-@app.route('/')
-def home():
-    return "Bot attivo 24/7!"
-
-def run_flask():
-    port = int(os.environ.get("PORT", 8080))
-    app.run(host="0.0.0.0", port=port)
-
-# 2. Configurazione Variabili d'Ambiente
-API_ID = int(os.environ.get("API_ID"))
-API_HASH = os.environ.get("API_HASH")
-STRING_SESSION = os.environ.get("STRING_SESSION")
-BOT_TOKEN = os.environ.get("BOT_TOKEN")
-
-raw_target = os.environ.get("TARGET_CHAT", "").strip()
-TARGET_CHAT = int(raw_target) if raw_target.lstrip('-').isdigit() else raw_target
-
-AFFILIATE_TAG = os.environ.get("AFFILIATE_TAG")
-LINK_SCONTO = "https://t.me/+DiuD1AbxY8thYzg0"
-
-# Client User (ascolta) e Client Bot (invia con bottoni)
-user_client = TelegramClient(StringSession(STRING_SESSION), API_ID, API_HASH)
-bot_client = TelegramClient('bot_session', API_ID, API_HASH)
-
-SOURCE_CHATS = ["KakobuySpreadsheet6", -1003634367021, 3634367021]
-
-# Gestione Album
-media_groups = {}
-
-def get_product_emoji(title: str) -> str:
-    """Riconosce la categoria del prodotto e restituisce l'emoji corretta."""
-    t = title.lower()
-    if any(k in t for k in ['shoe', 'sneaker', 'campus', 'jordan', 'dunk', 'yeezy', 'nike', 'adidas', 'travis', 'running', 'slide', 'foam']):
-        return "👟"
-    elif any(k in t for k in ['cap', 'hat', 'berretto', 'cappellino']):
-        return "🧢"
-    elif any(k in t for k in ['hoodie', 'jacket', 'zipper', 'felpa', 'giacca', 'coat', 'fleece', 'puffer']):
-        return "🧥"
-    elif any(k in t for k in ['tee', 't-shirt', 'shirt', 'maglietta']):
-        return "👕"
-    elif any(k in t for k in ['pants', 'shorts', 'trousers', 'pantaloni', 'jeans']):
-        return "👖"
-    elif any(k in t for k in ['bag', 'backpack', 'borsa', 'zaino', 'wallet']):
-        return "👜"
-    return "🛍️"
-
-@user_client.on(events.NewMessage(chats=SOURCE_CHATS))
-async def handler(event):
-    message = event.message
-    
-    if message.grouped_id:
-        gid = message.grouped_id
-        if gid not in media_groups:
-            media_groups[gid] = []
-            asyncio.create_task(process_album(gid))
-        media_groups[gid].append(message)
-    else:
-        await forward_post([message])
-
-async def process_album(gid):
-    await asyncio.sleep(2)
-    messages = media_groups.pop(gid, [])
-    if messages:
-        await forward_post(messages)
-
 async def forward_post(messages):
     print(f"🚨 ELABORAZIONE POST ({len(messages)} elementi)...")
     
@@ -127,12 +51,18 @@ async def forward_post(messages):
     ]
 
     try:
-        media_files = [m.media for m in messages if m.media]
-        
-        if media_files:
+        # Scarica i media in memoria (bytes) tramite user_client per poi farli inviare al bot
+        downloaded_files = []
+        for m in messages:
+            if m.media:
+                file_bytes = await user_client.download_media(m.media, file=bytes)
+                if file_bytes:
+                    downloaded_files.append(file_bytes)
+
+        if downloaded_files:
             await bot_client.send_file(
                 TARGET_CHAT, 
-                media_files, 
+                downloaded_files, 
                 caption=new_text, 
                 buttons=buttons
             )
@@ -142,19 +72,3 @@ async def forward_post(messages):
         print("✅ ALBUM, EMOJI E BOTTONI PUBBLICATI CON SUCCESSO!")
     except Exception as e:
         print(f"❌ Errore durante l'invio: {e}")
-
-async def main():
-    await bot_client.start(bot_token=BOT_TOKEN)
-    await user_client.start()
-    print("🚀 Bot e User Session connessi e pronti!")
-    await asyncio.gather(
-        user_client.run_until_disconnected(),
-        bot_client.run_until_disconnected()
-    )
-
-if __name__ == '__main__':
-    t = Thread(target=run_flask)
-    t.daemon = True
-    t.start()
-
-    asyncio.run(main())
