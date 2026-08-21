@@ -7,6 +7,7 @@ from threading import Thread
 from waitress import serve
 from telethon import TelegramClient, events, Button
 from telethon.sessions import StringSession
+from telethon.errors import FloodWaitError
 
 # 1. Server Web Keep-Alive (Waitress Production WSGI)
 app = Flask(__name__)
@@ -23,7 +24,6 @@ def run_flask():
 API_ID = int(os.environ.get("API_ID"))
 API_HASH = os.environ.get("API_HASH")
 STRING_SESSION = os.environ.get("STRING_SESSION")
-BOT_TOKEN = os.environ.get("BOT_TOKEN")
 
 raw_target = os.environ.get("TARGET_CHAT", "").strip()
 TARGET_CHAT = int(raw_target) if raw_target.lstrip('-').isdigit() else raw_target
@@ -31,8 +31,8 @@ TARGET_CHAT = int(raw_target) if raw_target.lstrip('-').isdigit() else raw_targe
 AFFILIATE_TAG = os.environ.get("AFFILIATE_TAG", "U2CC3E")
 LINK_SCONTO = "https://usfans.com/register?ref=U2CC3E"
 
-user_client = TelegramClient(StringSession(STRING_SESSION), API_ID, API_HASH)
-bot_client = TelegramClient('bot_session', API_ID, API_HASH)
+# Usiamo un solo client (User Session) per evitare blocchi e FloodWait da Telegram
+client = TelegramClient(StringSession(STRING_SESSION), API_ID, API_HASH)
 
 SOURCE_CHATS = ["KakobuySpreadsheet6", -1003634367021, 3634367021]
 
@@ -56,7 +56,7 @@ def get_product_emoji(title: str) -> str:
         return "👜"
     return "🛍️"
 
-@user_client.on(events.NewMessage(chats=SOURCE_CHATS))
+@client.on(events.NewMessage(chats=SOURCE_CHATS))
 async def handler(event):
     message = event.message
     
@@ -91,7 +91,7 @@ async def download_single_media(m, idx):
     if not m.media:
         return None
     try:
-        file_bytes = await asyncio.wait_for(user_client.download_media(m.media, file=bytes), timeout=15.0)
+        file_bytes = await asyncio.wait_for(client.download_media(m.media, file=bytes), timeout=15.0)
         if file_bytes:
             bio = io.BytesIO(file_bytes)
             bio.name = f"photo_{idx}.jpg"
@@ -173,23 +173,28 @@ async def forward_post(messages):
         image_files = [f for f in downloaded if f is not None]
 
         if image_files:
-            await bot_client.send_file(TARGET_CHAT, image_files)
-            await bot_client.send_message(TARGET_CHAT, new_text, buttons=buttons)
+            await client.send_file(TARGET_CHAT, image_files)
+            await client.send_message(TARGET_CHAT, new_text, buttons=buttons)
         else:
-            await bot_client.send_message(TARGET_CHAT, new_text, buttons=buttons)
+            await client.send_message(TARGET_CHAT, new_text, buttons=buttons)
             
         print("✅ ALBUM E LINK AFFILIATI PUBBLICATI CON SUCCESSO!")
     except Exception as e:
         print(f"❌ Errore durante l'invio: {e}")
 
 async def main():
-    await bot_client.start(bot_token=BOT_TOKEN)
-    await user_client.start()
-    print("🚀 Bot e User Session connessi e pronti!")
-    await asyncio.gather(
-        user_client.run_until_disconnected(),
-        bot_client.run_until_disconnected()
-    )
+    while True:
+        try:
+            await client.start()
+            print("🚀 Client connesso e pronto 24/7!")
+            await client.run_until_disconnected()
+            break
+        except FloodWaitError as e:
+            print(f"⏳ Telegram richiede un'attesa di {e.seconds} secondi per troppe connessioni. Attendo...")
+            await asyncio.sleep(e.seconds)
+        except Exception as e:
+            print(f"❌ Errore imprevisto durante l'avvio: {e}")
+            await asyncio.sleep(10)
 
 if __name__ == '__main__':
     t = Thread(target=run_flask)
