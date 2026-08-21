@@ -26,10 +26,13 @@ raw_target = os.environ.get("TARGET_CHAT", "").strip()
 TARGET_CHAT = int(raw_target) if raw_target.lstrip('-').isdigit() else raw_target
 
 AFFILIATE_TAG = os.environ.get("AFFILIATE_TAG")
-SOURCE_CHANNEL = "KakobuySpreadsheet6"
+
+# CANALE SORGENTE CON ID NUMERICO
+SOURCE_CHANNEL = -1003634367021
+
 LINK_SCONTO = "https://t.me/+DiuD1AbxY8thYzg0"
 
-# 3. Inizializzazione Client con StringSession
+# 3. Inizializzazione Client
 client = TelegramClient(StringSession(STRING_SESSION), API_ID, API_HASH)
 
 @client.on(events.NewMessage(chats=SOURCE_CHANNEL))
@@ -83,12 +86,12 @@ async def handler(event):
     else:
         await client.send_message(TARGET_CHAT, new_text, buttons=buttons)
 
-# 4. Avvio dell'Applicazione
+# 4. Avvio
 if __name__ == '__main__':
     t = Thread(target=run_flask)
     t.daemon = True
     t.start()
-    print("Bot avviato con Server Web e StringSession attiva!")
+    print("Bot avviato e collegato al canale sorgente!")
     
     client.start()
     client.run_until_disconnected()
