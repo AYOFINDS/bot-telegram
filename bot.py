@@ -33,13 +33,49 @@ raw_target = os.environ.get("TARGET_CHAT", "").strip()
 TARGET_CHAT = int(raw_target) if raw_target.lstrip('-').isdigit() else raw_target
 
 AFFILIATE_TAG = os.environ.get("AFFILIATE_TAG", "U2CC3E")
-LINK_SCONTO = f"https://usfans.com/register?ref={AFFILIATE_TAG}"
+LINK_SCONTO = f"https://www.usfans.com/register?ref={AFFILIATE_TAG}"
 
 client = TelegramClient(StringSession(STRING_SESSION), API_ID, API_HASH)
 
 SOURCE_CHATS = ["KakobuySpreadsheet6", -1003634367021, 3634367021]
 
 albums_buffer = {}
+
+
+def fix_affiliate_link(url, tag=AFFILIATE_TAG):
+    """Sostituisce ref= o affcode= (qualsiasi valore) col nostro codice.
+    Se il link non ha nessuno dei due parametri, lo aggiunge come ref=."""
+    if not url:
+        return url
+
+    new_url, count = re.subn(r'([?&])(ref|affcode)=[^&\s]+', rf'\1\2={tag}', url)
+    if count > 0:
+        return new_url
+
+    separator = '&' if '?' in url else '?'
+    return f"{url}{separator}ref={tag}"
+
+
+def find_usfans_link(entity_texts, source_text):
+    """Cerca tra i link del post quello relativo a Usfans.
+    1) Prima guarda l'URL delle entità (link markdown/testo cliccabile).
+    2) Se non trova nulla, fa un fallback su eventuali URL grezzi nel testo."""
+    for entity, text in entity_texts:
+        url = getattr(entity, 'url', None)
+        if url and 'usfans' in url.lower():
+            return url
+        if text and 'usfans' in text.lower() and url:
+            return url
+
+    # Fallback: URL scritti per esteso nel testo, vicino alla parola "usfans"
+    for line in source_text.split('\n'):
+        if 'usfans' in line.lower():
+            match = re.search(r'https?://[^\s]+', line)
+            if match:
+                return match.group(0)
+
+    return None
+
 
 @client.on(events.NewMessage(chats=SOURCE_CHATS))
 async def handler(event):
@@ -50,33 +86,37 @@ async def handler(event):
         albums_buffer[group_id] = {
             'messages': [],
             'caption': "",
-            'entities': [],
+            'entity_texts': [],
             'timer': None
         }
 
     albums_buffer[group_id]['messages'].append(msg)
-    
-    cap = getattr(msg, 'caption', '') or ''
+
+    cap = getattr(msg, 'caption', '') or getattr(msg, 'text', '') or ''
     if cap:
         albums_buffer[group_id]['caption'] = cap
-        albums_buffer[group_id]['entities'] = msg.caption_entities or []
+        try:
+            albums_buffer[group_id]['entity_texts'] = msg.get_entities_text()
+        except Exception:
+            albums_buffer[group_id]['entity_texts'] = []
 
     if albums_buffer[group_id]['timer']:
         albums_buffer[group_id]['timer'].cancel()
 
     albums_buffer[group_id]['timer'] = asyncio.create_task(process_album(group_id))
 
+
 async def process_album(group_id):
     try:
         await asyncio.sleep(3.0)
-        
+
         data = albums_buffer.pop(group_id, None)
         if not data:
             return
 
         messages = data['messages']
         source_text = data['caption']
-        entities = data['entities']
+        entity_texts = data['entity_texts']
 
         print(f"🚨 ELABORAZIONE ALBUM: {len(messages)} elementi trovati.")
 
@@ -84,59 +124,25 @@ async def process_album(group_id):
         price_line = "Price: N/A"
 
         for line in source_text.split('\n'):
-            clean_line = line.strip()
-            if 'article:' in clean_line.lower():
-                article_line = clean_line
-            elif 'price:' in clean_line.lower():
-                price_line = clean_line
+            if 'article:' in line.lower():
+                article_line = line.strip()
+            elif 'price:' in line.lower():
+                price_line = line.strip()
 
-        # Estrazione intelligente del link del prodotto UsFans (evitando il link di registrazione)
-        product_link = None
-        
-        # 1. Cerca prima nelle entità Telegram
-        for entity in entities:
-            if hasattr(entity, 'url') and entity.url:
-                url_lower = entity.url.lower()
-                if 'usfans' in url_lower and 'register' not in url_lower:
-                    product_link = entity.url
-                    break
+        product_link = find_usfans_link(entity_texts, source_text)
 
-        # 2. Se non trovato nelle entità, cerca nel testo con regex
         if not product_link:
-            urls = re.findall(r'https?://[^\s]+', source_text)
-            for u in urls:
-                u_lower = u.lower()
-                if 'usfans' in u_lower and 'register' not in u_lower:
-                    product_link = u
-                    break
-            
-            # Se c'è un qualsiasi altro link valido (es. Weidian/Taobao), prendiamo quello come fallback
-            if not product_link:
-                for u in urls:
-                    if 'register' not in u.lower():
-                        product_link = u
-                        break
+            print("⚠️ Nessun link Usfans trovato in questo post, salto l'invio.")
+            return
 
-        # Fallback finale se proprio non trova nulla
-        if not product_link:
-            product_link = "https://www.usfans.com"
+        product_link = fix_affiliate_link(product_link)
 
-        # Pulizia e iniezione del codice affiliato sul link del prodotto
-        product_link = re.sub(r'[\?&](ref|affcode)=[^&\s]+', '', product_link)
-        if '?' in product_link:
-            product_link += f'&affcode={AFFILIATE_TAG}'
-        else:
-            product_link += f'?affcode={AFFILIATE_TAG}'
-
-        # Formattazione finale del messaggio
         final_text = (
             f"🎖️ **Official Spreadsheet** 🎖️\n"
-            f"✈️ {article_line}\n"
-            f"💰 {price_line}\n"
-            f"🚚 **Agents:**\n"
-            f"🔗 [UsFans]({product_link})\n\n"
-            f"✍️ [Register UsFans Here ($820 Coupon)]({LINK_SCONTO}) ✍️\n"
-            f"🚨 **Warm Risk Reminder Popup** 🚨"
+            f"🔍 {article_line}\n"
+            f"💰 {price_line}\n\n"
+            f"🔗 [UsFans]({product_link})\n"
+            f"✍️ [Register UsFans Here ($820 Coupon)]({LINK_SCONTO}) ✍️"
         )
 
         media_messages = [m for m in messages if m.media]
@@ -152,12 +158,13 @@ async def process_album(group_id):
         else:
             await client.send_message(TARGET_CHAT, final_text, link_preview=False)
 
-        print("✅ ALBUM INVIATO CORRETTAMENTE CON LINK PRODOTTO CORRETTO!")
+        print("✅ ALBUM INVIATO CORRETTAMENTE (SOLO LINK USFANS)!")
 
     except asyncio.CancelledError:
         pass
     except Exception as e:
         print(f"❌ Errore durante l'invio dell'album: {e}")
+
 
 async def download_media_safe(m, idx):
     if not m.media:
@@ -172,6 +179,7 @@ async def download_media_safe(m, idx):
         print(f"⚠️ Errore download foto {idx}: {e}")
     return None
 
+
 async def main():
     while True:
         try:
@@ -185,6 +193,7 @@ async def main():
         except Exception as e:
             print(f"❌ Errore imprevisto: {e}")
             await asyncio.sleep(10)
+
 
 if __name__ == '__main__':
     t = Thread(target=run_flask)
