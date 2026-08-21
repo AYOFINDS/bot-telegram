@@ -41,7 +41,6 @@ async def handler(event):
     msg = event.message
     chat_id = event.chat_id
 
-    # Se fa parte di un album, raccogliamo tutte le foto
     if msg.grouped_id:
         gid = msg.grouped_id
         if gid not in pending_albums:
@@ -58,17 +57,14 @@ async def handler(event):
             
         pending_albums[gid]['timer'] = asyncio.create_task(process_album_delayed(gid))
 
-    # Se è il messaggio di testo con i dettagli (articolo, prezzo e link)
     elif msg.text and ("Article:" in msg.text or "Price:" in msg.text or "spreadsheet" in msg.text.lower()):
         pending_texts[chat_id] = msg
 
-    # Se è una foto singola senza album
     elif msg.media:
         await process_and_forward([msg], None)
 
 async def process_album_delayed(gid):
     try:
-        # Aspettiamo 5 secondi per essere sicuri di aver ricevuto tutte le foto dell'album
         await asyncio.sleep(5.0)
         data = pending_albums.pop(gid, None)
         if data:
@@ -99,7 +95,6 @@ async def process_and_forward(media_list, text_msg):
     source_text = ""
     entities = []
 
-    # Recupera il testo dal messaggio separato o dalle didascalie
     if text_msg:
         source_text = getattr(text_msg, 'text', '') or getattr(text_msg, 'message', '') or ""
         entities = text_msg.entities or []
@@ -111,15 +106,23 @@ async def process_and_forward(media_list, text_msg):
                 entities = m.caption_entities or []
                 break
 
-    # Se per qualche motivo il testo è vuoto, prendiamo un fallback pulito
-    if not source_text:
-        source_text = "💯 Latest spreadsheet 💯\n🔍 Article: Prodotto Esclusivo\n💰 Price: N/A"
+    # Estrazione rigorosa di Article e Price dal testo originale
+    article_match = re.search(r'(🔍\s*Article:.*)', source_text, re.IGNORECASE)
+    if not article_match:
+        article_match = re.search(r'(Article:.*)', source_text, re.IGNORECASE)
 
-    # Estrazione del link del prodotto originale (cerca Usfans o qualsiasi link http presente)
+    price_match = re.search(r'(💰\s*Price:.*)', source_text, re.IGNORECASE)
+    if not price_match:
+        price_match = re.search(r'(Price:.*)', source_text, re.IGNORECASE)
+
+    article_line = article_match.group(1).strip() if article_match else "🔍 Article: Prodotto Esclusivo"
+    price_line = price_match.group(1).strip() if price_match else "💰 Price: N/A"
+
+    # Ricerca del link di usfans nel messaggio originale per sostituire il codice affiliato
     product_link = None
     for entity in entities:
         if hasattr(entity, 'url') and entity.url:
-            if 'usfans' in entity.url.lower():
+            if 'usfans.com' in entity.url.lower():
                 product_link = entity.url
                 break
 
@@ -132,14 +135,21 @@ async def process_and_forward(media_list, text_msg):
     if not product_link:
         product_link = "https://www.usfans.com"
 
-    # Pulisce i vecchi parametri di affiliazione e applica il tuo tag corretto
+    # Sostituisce qualsiasi vecchio codice con il tuo U2CC3E
     product_link = re.sub(r'[\?&](ref|affcode)=[^&\s]+', '', product_link)
     if '?' in product_link:
         product_link += f'&affcode={AFFILIATE_TAG}'
     else:
         product_link += f'?affcode={AFFILIATE_TAG}'
 
-    # Pulsanti richiesti
+    # Struttura fissa richiesta
+    final_text = (
+        f"{article_line}\n"
+        f"{price_line}\n\n"
+        f"🎁 **BONUS BENVENUTO:** Usa i tuoi coupon per risparmiare fino al 40% sul tuo ordine!\n"
+        f"🔥 **Batch:** Qualità e dettagli top"
+    )
+
     buttons = [
         [Button.url("🛒 ACQUISTA PRODOTTO", product_link)],
         [Button.url("🎁 ISCRIVITI + 40% DI SCONTO", LINK_SCONTO)]
@@ -148,19 +158,17 @@ async def process_and_forward(media_list, text_msg):
     try:
         media_list.sort(key=lambda x: x.id)
         
-        # Scarica TUTTE le foto dell'album
         tasks = [download_media_safe(m, idx) for idx, m in enumerate(media_list)]
         downloaded = await asyncio.gather(*tasks)
         image_files = [f for f in downloaded if f is not None]
 
         if image_files:
-            # Invia tutte le foto insieme e poi il testo con i bottoni
             await client.send_file(TARGET_CHAT, image_files)
-            await client.send_message(TARGET_CHAT, source_text, buttons=buttons)
+            await client.send_message(TARGET_CHAT, final_text, buttons=buttons)
         else:
-            await client.send_message(TARGET_CHAT, source_text, buttons=buttons)
+            await client.send_message(TARGET_CHAT, final_text, buttons=buttons)
             
-        print("✅ POST INVIATO CORRETTAMENTE!")
+        print("✅ POST INVIATO ESATTAMENTE COME RICHIESTO!")
     except Exception as e:
         print(f"❌ Errore durante l'invio: {e}")
 
