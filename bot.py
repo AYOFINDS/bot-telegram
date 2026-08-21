@@ -34,19 +34,17 @@ client = TelegramClient(StringSession(STRING_SESSION), API_ID, API_HASH)
 SOURCE_CHATS = ["KakobuySpreadsheet6", -1003634367021, 3634367021]
 
 album_cache = {}
-text_cache = {}
 
 @client.on(events.NewMessage(chats=SOURCE_CHATS))
 async def handler(event):
     msg = event.message
     chat_id = event.chat_id
 
-    # Se fa parte di un album (gruppo di foto)
+    # Se fa parte di un album o ha un grouped_id
     if msg.grouped_id:
         gid = msg.grouped_id
         if gid not in album_cache:
             album_cache[gid] = {
-                'chat_id': chat_id,
                 'messages': [],
                 'timer': None
             }
@@ -56,28 +54,23 @@ async def handler(event):
         if album_cache[gid]['timer']:
             album_cache[gid]['timer'].cancel()
             
-        # Finestra di attesa estesa a 30 secondi per raccogliere tutto
+        # Aspettiamo 15 secondi per raccogliere tutto l'album
         album_cache[gid]['timer'] = asyncio.create_task(process_album(gid))
 
-    # Se è un messaggio di testo con i dati del prodotto
-    elif msg.text and ("Article:" in msg.text or "Price:" in msg.text or "spreadsheet" in msg.text.lower()):
-        text_cache[chat_id] = msg
-
-    # Foto singola senza album
+    # Messaggio singolo con media (foto singola)
     elif msg.media:
-        await process_and_send([msg], None)
+        await process_and_send([msg])
+
+    # Messaggio di testo isolato (senza album)
+    elif msg.text and ("Article:" in msg.text or "Price:" in msg.text):
+        await process_and_send([msg])
 
 async def process_album(gid):
     try:
-        # Aspettiamo ben 30 secondi per essere sicuri al 100% di avere tutte le foto e il testo
-        await asyncio.sleep(30.0)
+        await asyncio.sleep(15.0)
         data = album_cache.pop(gid, None)
         if data:
-            chat_id = data['chat_id']
-            messages = data['messages']
-            text_msg = text_cache.pop(chat_id, None)
-            
-            await process_and_send(messages, text_msg)
+            await process_and_send(data['messages'])
     except asyncio.CancelledError:
         pass
 
@@ -94,20 +87,33 @@ async def download_media_safe(m, idx):
         print(f"⚠️ Errore download foto {idx}: {e}")
     return None
 
-async def process_and_send(media_list, text_msg):
-    print(f"🚨 ELABORAZIONE POST: {len(media_list)} foto trovate.")
+async def process_and_send(media_list):
+    print(f"🚨 ELABORAZIONE POST: {len(media_list)} elementi trovati.")
     
     source_text = ""
     entities = []
 
-    if text_msg:
-        source_text = getattr(text_msg, 'text', '') or getattr(text_msg, 'message', '') or ""
-        entities = text_msg.entities or []
+    # Cerca il testo e le entità (link) direttamente dentro i messaggi dell'album o del post
+    for m in media_list:
+        # Controlla la caption (didascalia)
+        cap = getattr(m, 'caption', '') or ''
+        if cap and ('Article:' in cap or 'Price:' in cap or 'spreadsheet' in cap.lower() or len(cap) > 10):
+            source_text = cap
+            entities = m.caption_entities or []
+            break
+        
+        # Controlla se il messaggio ha del testo normale
+        txt = getattr(m, 'text', '') or ''
+        if txt and ('Article:' in txt or 'Price:' in txt or 'spreadsheet' in txt.lower()):
+            source_text = txt
+            entities = m.entities or []
+            break
 
+    # Se non ha trovato un testo specifico nelle caption, prende la prima caption disponibile o un fallback
     if not source_text:
         for m in media_list:
-            cap = getattr(m, 'caption', '') or ""
-            if cap and ("Article:" in cap or "Price:" in cap):
+            cap = getattr(m, 'caption', '') or ''
+            if cap:
                 source_text = cap
                 entities = m.caption_entities or []
                 break
@@ -115,6 +121,7 @@ async def process_and_send(media_list, text_msg):
     if not source_text:
         source_text = "🔍 Article: Prodotto Esclusivo\n💰 Price: N/A"
 
+    # Estrazione precisa di articolo e prezzo riga per riga
     article_line = "🔍 Article: Prodotto Esclusivo"
     price_line = "💰 Price: N/A"
 
@@ -124,6 +131,7 @@ async def process_and_send(media_list, text_msg):
         elif 'price:' in line.lower():
             price_line = line.strip()
 
+    # Ricerca del link Usfans nelle entità o nel testo grezzo
     product_link = None
     for entity in entities:
         if hasattr(entity, 'url') and entity.url:
@@ -143,12 +151,14 @@ async def process_and_send(media_list, text_msg):
     if not product_link:
         product_link = "https://www.usfans.com"
 
+    # Sostituzione del codice affiliato con il tuo U2CC3E
     product_link = re.sub(r'[\?&](ref|affcode)=[^&\s]+', '', product_link)
     if '?' in product_link:
         product_link += f'&affcode={AFFILIATE_TAG}'
     else:
         product_link += f'?affcode={AFFILIATE_TAG}'
 
+    # Struttura fissa finale richiesta
     final_text = (
         f"{article_line}\n"
         f"{price_line}\n\n"
@@ -162,9 +172,11 @@ async def process_and_send(media_list, text_msg):
     ]
 
     try:
-        media_list.sort(key=lambda x: x.id)
-        
-        tasks = [download_media_safe(m, idx) for idx, m in enumerate(media_list)]
+        # Filtra solo i messaggi che contengono effettivamente dei file multimediali per l'album
+        media_messages = [m for m in media_list if m.media]
+        media_messages.sort(key=lambda x: x.id)
+
+        tasks = [download_media_safe(m, idx) for idx, m in enumerate(media_messages)]
         downloaded = await asyncio.gather(*tasks)
         image_files = [f for f in downloaded if f is not None]
 
@@ -174,7 +186,7 @@ async def process_and_send(media_list, text_msg):
         else:
             await client.send_message(TARGET_CHAT, final_text, buttons=buttons)
             
-        print("✅ POST INVIATO CORRETTAMENTE CON ALBUM COMPLETO, TESTO E TASTI!")
+        print("✅ POST INVIATO CORRETTAMENTE CON ALBUM, TESTO E TASTI!")
     except Exception as e:
         print(f"❌ Errore durante l'invio: {e}")
 
