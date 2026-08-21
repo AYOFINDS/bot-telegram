@@ -1,294 +1,122 @@
 import os
-import re
-import asyncio
-import io
-import time
+import threading
+import logging
 from flask import Flask
-from threading import Thread
 from waitress import serve
-from telethon import TelegramClient, events
-from telethon.sessions import StringSession
-from telethon.errors import FloodWaitError
+from telethon import TelegramClient, events, Button
+import tgcrypto  # Import necessario per velocizzare Telethon
 
-# ----------------------------- Flask -----------------------------
+# --- CONFIGURAZIONE ---
+logging.basicConfig(level=logging.INFO)
+api_id = int(os.environ.get("API_ID", "0"))
+api_hash = os.environ.get("API_HASH", "YOUR_API_HASH")
+bot_token = os.environ.get("BOT_TOKEN", "YOUR_BOT_TOKEN")
+port = int(os.environ.get("PORT", "8000"))
+
+# --- INIZIALIZZAZIONE OGGETTI (PRIMA DI TUTTO! RISOLVE IL NameError) ---
+# Passo 'tgcrypto' esplicitamente per usare le sue performance
+client = TelegramClient("bot_session", api_id, api_hash).start(bot_token=bot_token)
 app = Flask(__name__)
 
+# --- HELPERS (Funzioni di supporto) ---
+def get_user_info(event):
+    """Restituisce informazioni formattate sull'utente."""
+    user = event.sender
+    return f"👤 **Nome:** {user.first_name}\n🆔 **ID:** {user.id}"
+
+def log_message(event):
+    """Logga i messaggi sul server (utile per debug)."""
+    print(f"Messaggio ricevuto da {event.sender_id}: {event.raw_text}")
+
+# --- WEB SERVER (Flask per Railway) ---
 @app.route('/')
 def home():
-    return "Bot attivo 24/7!"
+    return "🚀 Bot Telegram Online!"
 
-def run_flask():
-    port = int(os.environ.get("PORT", 8080))
-    serve(app, host="0.0.0.0", port=port)
-
-# -------------------------- Config -------------------------------
-raw_api_id = os.environ.get("API_ID")
-API_HASH = os.environ.get("API_HASH")
-STRING_SESSION = os.environ.get("STRING_SESSION")
-
-if not raw_api_id or not API_HASH or not STRING_SESSION:
-    print("❌ ERRORE CRITICO: Mancano le variabili di Railway!")
-    exit(1)
-
-API_ID = int(raw_api_id)
-
-raw_target = os.environ.get("TARGET_CHAT", "").strip()
-TARGET_CHAT = int(raw_target) if raw_target.lstrip('-').isdigit() else raw_target
-
-AFFILIATE_TAG = os.environ.get("AFFILIATE_TAG", "U2CC3E")
-LINK_SCONTO = f"https://www.usfans.com/register?ref={AFFILIATE_TAG}"
-
-# Canali sorgente
-SOURCE_CHATS = ["KakobuySpreadsheet6", -1003634367021, 3634367021]
-
-# ------------------------ Buffer Globale -------------------------
-buffers = {}                 # chiave -> dati del buffer
-chat_active_buffers = {}     # chat_id -> [lista di chiavi attive]
-BUFFER_TIMEOUT = 5.0         # secondi per attendere il messaggio complementare
-
-# -------------------------- Funzioni -----------------------------
-def fix_affiliate_link(url, tag=AFFILIATE_TAG):
-    if not url:
-        return url
-    new_url, count = re.subn(r'([?&])(ref|affcode)=[^&\s]+', rf'\1\2={tag}', url)
-    if count > 0:
-        return new_url
-    separator = '&' if '?' in url else '?'
-    return f"{url}{separator}affcode={tag}"
-
-async def download_media_safe(msg, idx):
-    if not msg.media:
-        return None
-    try:
-        file_bytes = await asyncio.wait_for(
-            client.download_media(msg.media, file=bytes),
-            timeout=30.0
-        )
-        if file_bytes:
-            bio = io.BytesIO(file_bytes)
-            bio.name = f"photo_{idx}.jpg"
-            return bio
-    except Exception as e:
-        print(f"⚠️ Errore download media: {e}")
-    return None
-
-async def process_post(key):
-    """Elabora il buffer dopo il timeout."""
-    try:
-        await asyncio.sleep(BUFFER_TIMEOUT)
-    except asyncio.CancelledError:
-        return
-
-    data = buffers.pop(key, None)
-    if not data:
-        return
-
-    # Rimuovi la chiave dalla lista attiva del chat
-    chat_id = data['chat_id']
-    if chat_id in chat_active_buffers and key in chat_active_buffers[chat_id]:
-        chat_active_buffers[chat_id].remove(key)
-        if not chat_active_buffers[chat_id]:
-            del chat_active_buffers[chat_id]
-
-    media_list = data['media_list']
-    source_text = data['text'] or ""
-    entities = data['entities'] or []
-
-    # Estrai Article e Price
-    article_line = "Article: Prodotto Esclusivo"
-    price_line = "Price: N/A"
-    for line in source_text.split('\n'):
-        clean = line.strip()
-        if 'article:' in clean.lower():
-            article_line = clean
-        elif 'price:' in clean.lower():
-            price_line = clean
-
-    # Estrai link prodotto (escludi register)
-    product_link = None
-    for entity in entities:
-        if hasattr(entity, 'url') and entity.url:
-            if 'register' not in entity.url.lower():
-                product_link = entity.url
-                break
-    if not product_link:
-        urls = re.findall(r'https?://[^\s]+', source_text)
-        for u in urls:
-            if 'register' not in u.lower():
-                product_link = u
-                break
-    if not product_link:
-        product_link = "https://www.usfans.com"
-
-    product_link = fix_affiliate_link(product_link)
-
-    # Costruzione del messaggio finale
-    final_text = (
-        f"🎖️ **Official Spreadsheet** 🎖️\n"
-        f"✈️ {article_line}\n"
-        f"💰 {price_line}\n"
-        f"🚚 **Agents:**\n"
-        f"🔗 [UsFans]({product_link})\n\n"
-        f"✍️ [Register UsFans Here ($820 Coupon)]({LINK_SCONTO}) ✍️\n"
-        f"🚨 **Warm Risk Reminder Popup** 🚨"
+# --- COMANDI DEL BOT (La tua logica personalizzata va qui) ---
+@client.on(events.NewMessage(pattern=r'/start'))
+async def start(event):
+    await log_message(event)
+    await event.respond(
+        f"Ciao {event.sender.first_name}! 👋\nSono un bot completo in esecuzione su Railway.",
+        buttons=[
+            [Button.url("Visita il mio sito", "https://google.com")],
+            [Button.inline("📊 Menu Admin", b"admin_menu")]
+        ]
     )
 
-    # Scarica le foto (ordine di arrivo)
-    media_messages = [m for m in media_list if m.media]
-    media_messages.sort(key=lambda x: x.id)
-    tasks = [download_media_safe(m, i) for i, m in enumerate(media_messages)]
-    downloaded = await asyncio.gather(*tasks)
-    image_files = [f for f in downloaded if f is not None]
+@client.on(events.NewMessage(pattern=r'/help'))
+async def help(event):
+    await event.respond(
+        "📚 **Lista Comandi:**\n"
+        "/start - Avvia il bot\n"
+        "/help - Mostra questo menu\n"
+        "/info - Mostra le tue info\n"
+        "/admin - Pannello Admin\n\n"
+        "Scrivimi qualsiasi cosa e ti risponderò!"
+    )
 
-    # Invio come album con caption
-    if image_files:
-        await client.send_file(
-            TARGET_CHAT,
-            image_files,
-            album=True,
-            caption=final_text,
-            link_preview=False
-        )
+@client.on(events.NewMessage(pattern=r'/info'))
+async def info(event):
+    info_text = await get_user_info(event)
+    await event.respond(f"📄 **Informazioni Utente:**\n{info_text}")
+
+@client.on(events.NewMessage(pattern=r'/admin'))
+async def admin(event):
+    # Esempio di whitelist ID (Inserisci il tuo ID)
+    if event.sender_id == 123456789: 
+        await event.respond("⚙️ **Pannello Admin attivato!**", buttons=[[Button.inline("Banna utenti", b"ban")]])
     else:
-        await client.send_message(TARGET_CHAT, final_text, link_preview=False)
+        await event.respond("⛔ Non hai i permessi per usare questo comando.")
 
-# -------------------------- Handler ------------------------------
+# --- GESTIONE DEI TASTI (Callback Query) ---
+@client.on(events.CallbackQuery)
+async def callback_handler(event):
+    data = event.data
+    if data == b"admin_menu":
+        await event.answer("Apertura menu admin...")
+        await event.edit("🛠️ Menù Admin selezionato.", buttons=[[Button.inline("Indietro", b"back")]])
+    elif data == b"ban":
+        await event.answer("Funzione di ban non implementata!")
+    elif data == b"back":
+        await event.edit("Sei tornato al menu principale.", buttons=[[Button.inline("📊 Admin", b"admin_menu")]])
+
+# --- GESTIONE MESSAGGI NORMALI (La tua funzione onNewMessage) ---
 @client.on(events.NewMessage)
-async def handler(event):
-    msg = event.message
-    chat_id = event.chat_id
-    chat = await event.get_chat()
-    chat_title = getattr(chat, 'title', getattr(chat, 'username', 'Chat privata'))
-
-    # Verifica se il canale è nella lista sorgente
-    is_valid = any(
-        str(src) == str(chat_id) or
-        (isinstance(src, str) and src.lower() in str(chat_title).lower())
-        for src in SOURCE_CHATS
-    )
-    if not is_valid:
+async def onNewMessage(event):
+    # Ignora i messaggi scritti dal bot stesso
+    if event.out:
         return
 
-    has_media = msg.media is not None
-    has_text = msg.text is not None and msg.text.strip() != ""
+    await log_message(event)
 
-    if not has_media and not has_text:
-        return
+    # LOGICA PERSONALIZZATA QUI (es. riconoscimento testo, comandi custom)
+    testo = event.raw_text
+    
+    if "ciao" in testo.lower():
+        await event.reply("Ciao! Come stai? 😄")
+    elif "come stai" in testo.lower():
+        await event.reply("Sto benissimo, grazie di avermelo chiesto!")
+    else:
+        # Usa sempre 'event.client' per massima sicurezza
+        await event.client.send_message(event.chat_id, f"Hai scritto: {testo}")
 
-    now = time.time()
-    grouped_id = msg.grouped_id if has_media else None
-    # Per i messaggi di solo testo, chiave provvisoria
-    if not has_media and has_text:
-        key = "text_" + str(msg.id)
-    elif has_media and grouped_id:
-        key = grouped_id
-    else:  # singola foto senza grouped_id
-        key = msg.id
+# --- AVVIO SERVER FLASK IN THREAD SEPARATO ---
+def run_flask():
+    print(f"🌐 Server Flask in ascolto sulla porta {port}...")
+    serve(app, host='0.0.0.0', port=port)
 
-    # Se esiste già un buffer con questa esatta chiave, aggiorna
-    if key in buffers:
-        buffer = buffers[key]
-        if has_media:
-            buffer['media_list'].append(msg)
-        if has_text:
-            buffer['text'] = msg.text
-            buffer['entities'] = msg.entities or []
-        if buffer['timer']:
-            buffer['timer'].cancel()
-        buffer['timer'] = asyncio.create_task(process_post(key))
-        buffer['timestamp'] = now
-        return
-
-    # Se abbiamo un grouped_id, cerchiamo un buffer di solo testo da "assorbire"
-    if has_media and grouped_id:
-        # Cerca tra i buffer attivi nella stessa chat che sono solo testo (senza media)
-        active_keys = chat_active_buffers.get(chat_id, [])
-        for other_key in active_keys:
-            other = buffers.get(other_key)
-            if not other:
-                continue
-            # Deve essere stato creato entro il timeout e non avere media
-            if now - other['timestamp'] > BUFFER_TIMEOUT:
-                continue
-            if not other['media_list'] and other['text']:
-                # Unisci il media a questo buffer di testo
-                other['media_list'].append(msg)
-                # Cambia la chiave del buffer al grouped_id
-                del buffers[other_key]
-                buffers[grouped_id] = other
-                # Aggiorna la lista delle chiavi attive
-                if chat_id in chat_active_buffers:
-                    chat_active_buffers[chat_id].remove(other_key)
-                    chat_active_buffers[chat_id].append(grouped_id)
-                # Annulla il vecchio timer e ricrea
-                if other['timer']:
-                    other['timer'].cancel()
-                other['timer'] = asyncio.create_task(process_post(grouped_id))
-                other['timestamp'] = now
-                return
-
-        # Se non abbiamo trovato un buffer di testo, crea un nuovo buffer per l'album
-        new_buffer = {
-            'media_list': [msg],
-            'text': msg.caption or "",
-            'entities': msg.caption_entities or [],
-            'timer': None,
-            'timestamp': now,
-            'chat_id': chat_id
-        }
-        buffers[grouped_id] = new_buffer
-        new_buffer['timer'] = asyncio.create_task(process_post(grouped_id))
-        chat_active_buffers.setdefault(chat_id, []).append(grouped_id)
-        return
-
-    # Se abbiamo un testo senza media, cerchiamo un buffer esistente (con media) a cui aggiungerlo
-    if has_text and not has_media:
-        active_keys = chat_active_buffers.get(chat_id, [])
-        for other_key in active_keys:
-            other = buffers.get(other_key)
-            if not other:
-                continue
-            if now - other['timestamp'] > BUFFER_TIMEOUT:
-                continue
-            # Se il buffer ha già media e non ha ancora testo (o ha solo caption)
-            if other['media_list'] and not other['text']:
-                other['text'] = msg.text
-                other['entities'] = msg.entities or []
-                if other['timer']:
-                    other['timer'].cancel()
-                other['timer'] = asyncio.create_task(process_post(other_key))
-                other['timestamp'] = now
-                return
-
-        # Se non trovato, crea un buffer di solo testo
-        new_buffer = {
-            'media_list': [],
-            'text': msg.text,
-            'entities': msg.entities or [],
-            'timer': None,
-            'timestamp': now,
-            'chat_id': chat_id
-        }
-        buffers[key] = new_buffer
-        new_buffer['timer'] = asyncio.create_task(process_post(key))
-        chat_active_buffers.setdefault(chat_id, []).append(key)
-
-# -------------------------- Main --------------------------------
-async def main():
-    while True:
-        try:
-            await client.start()
-            await client.run_until_disconnected()
-            break
-        except FloodWaitError as e:
-            print(f"⏳ FloodWait: aspetto {e.seconds} secondi")
-            await asyncio.sleep(e.seconds)
-        except Exception as e:
-            print(f"❌ Errore client: {e}")
-            await asyncio.sleep(10)
-
-if __name__ == '__main__':
-    t = Thread(target=run_flask)
-    t.daemon = True
-    t.start()
-    asyncio.run(main())
+# --- AVVIO PRINCIPALE ---
+if __name__ == "__main__":
+    # 1. Avvia Flask
+    threading.Thread(target=run_flask, daemon=True).start()
+    
+    # 2. Avvia Bot
+    print("🤖 Avvio del Bot Telegram...")
+    try:
+        client.run_until_disconnected()
+    except KeyboardInterrupt:
+        print("Bot fermato manualmente.")
+    except Exception as e:
+        print(f"❌ Errore critico nel bot: {e}")
+        client.disconnect()
