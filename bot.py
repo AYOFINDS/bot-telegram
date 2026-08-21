@@ -4,10 +4,11 @@ import asyncio
 import io
 from flask import Flask
 from threading import Thread
+from waitress import serve
 from telethon import TelegramClient, events, Button
 from telethon.sessions import StringSession
 
-# 1. Server Web Keep-Alive
+# 1. Server Web Keep-Alive (Waitress Production WSGI)
 app = Flask(__name__)
 
 @app.route('/')
@@ -16,7 +17,7 @@ def home():
 
 def run_flask():
     port = int(os.environ.get("PORT", 8080))
-    app.run(host="0.0.0.0", port=port)
+    serve(app, host="0.0.0.0", port=port)
 
 # 2. Configurazione Variabili
 API_ID = int(os.environ.get("API_ID"))
@@ -35,7 +36,6 @@ bot_client = TelegramClient('bot_session', API_ID, API_HASH)
 
 SOURCE_CHATS = ["KakobuySpreadsheet6", -1003634367021, 3634367021]
 
-# Struttura per gestire l'album e il relativo timer
 album_buffers = {}
 
 def get_product_emoji(title: str) -> str:
@@ -71,11 +71,9 @@ async def handler(event):
         
         album_buffers[gid]['messages'].append(message)
         
-        # Cancella il timer precedente se arriva una nuova foto dello stesso album
         if album_buffers[gid]['task'] is not None:
             album_buffers[gid]['task'].cancel()
             
-        # Fai ripartire il timer di attesa dinamico (4 secondi dall'ultima foto ricevuta)
         album_buffers[gid]['task'] = asyncio.create_task(wait_and_process_album(gid))
     else:
         await forward_post([message])
@@ -108,7 +106,6 @@ async def forward_post(messages):
     full_text = ""
     entities = []
 
-    # Scansiona tutte le foto per prendere quella con il testo
     for m in messages:
         txt = m.text or m.message or m.raw_text or ""
         if len(txt.strip()) > 0:
@@ -120,7 +117,6 @@ async def forward_post(messages):
         print("❌ Nessun testo trovato nell'album. Interruzione.")
         return
 
-    # 1. Estrazione Titolo e Prezzo
     article_match = re.search(r'Article:\s*(.*)', full_text, re.IGNORECASE)
     price_match = re.search(r'Price:\s*(.*)', full_text, re.IGNORECASE)
 
@@ -129,7 +125,6 @@ async def forward_post(messages):
 
     emoji = get_product_emoji(article_val)
 
-    # 2. Estrazione Link USFans
     usfans_link = None
     
     for entity in entities:
@@ -151,7 +146,6 @@ async def forward_post(messages):
     if not usfans_link:
         usfans_link = "https://www.usfans.com"
 
-    # Clean & Affiliato
     usfans_link = re.sub(r'[\?&](ref|affcode)=[^&\s]+', '', usfans_link)
     
     if '?' in usfans_link:
