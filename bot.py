@@ -35,7 +35,8 @@ bot_client = TelegramClient('bot_session', API_ID, API_HASH)
 
 SOURCE_CHATS = ["KakobuySpreadsheet6", -1003634367021, 3634367021]
 
-media_groups = {}
+# Struttura per gestire l'album e il relativo timer
+album_buffers = {}
 
 def get_product_emoji(title: str) -> str:
     t = title.lower()
@@ -61,19 +62,32 @@ async def handler(event):
     
     if message.grouped_id:
         gid = message.grouped_id
-        if gid not in media_groups:
-            media_groups[gid] = []
-            asyncio.create_task(process_album(gid))
-        media_groups[gid].append(message)
+        
+        if gid not in album_buffers:
+            album_buffers[gid] = {
+                'messages': [],
+                'task': None
+            }
+        
+        album_buffers[gid]['messages'].append(message)
+        
+        # Cancella il timer precedente se arriva una nuova foto dello stesso album
+        if album_buffers[gid]['task'] is not None:
+            album_buffers[gid]['task'].cancel()
+            
+        # Fai ripartire il timer di attesa dinamico (4 secondi dall'ultima foto ricevuta)
+        album_buffers[gid]['task'] = asyncio.create_task(wait_and_process_album(gid))
     else:
         await forward_post([message])
 
-async def process_album(gid):
-    # Aumentato il tempo di attesa a 7 secondi per permettere la ricezione del testo dell'album
-    await asyncio.sleep(7.0)
-    messages = media_groups.pop(gid, [])
-    if messages:
-        await forward_post(messages)
+async def wait_and_process_album(gid):
+    try:
+        await asyncio.sleep(4.0)
+        buffer = album_buffers.pop(gid, None)
+        if buffer and buffer['messages']:
+            await forward_post(buffer['messages'])
+    except asyncio.CancelledError:
+        pass
 
 async def download_single_media(m, idx):
     if not m.media:
@@ -91,16 +105,14 @@ async def download_single_media(m, idx):
 async def forward_post(messages):
     print(f"🚨 ELABORAZIONE POST ({len(messages)} elementi)...")
     
-    text_msg = None
     full_text = ""
     entities = []
 
-    # Cerca il testo isolando tutti i tipi di contenuto del messaggio
+    # Scansiona tutte le foto per prendere quella con il testo
     for m in messages:
-        candidate_text = m.text or m.message or m.raw_text or ""
-        if len(candidate_text.strip()) > 0:
-            text_msg = m
-            full_text = candidate_text
+        txt = m.text or m.message or m.raw_text or ""
+        if len(txt.strip()) > 0:
+            full_text = txt
             entities = m.entities or []
             break
 
