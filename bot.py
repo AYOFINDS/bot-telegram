@@ -74,6 +74,11 @@ def find_usfans_link(entity_texts, source_text):
             if match:
                 return match.group(0)
 
+    # Fallback generale: prende il primo link disponibile nel testo se esiste
+    match_any = re.search(r'https?://[^\s]+', source_text)
+    if match_any:
+        return match_any.group(0)
+
     return None
 
 
@@ -131,9 +136,9 @@ async def process_album(group_id):
 
         product_link = find_usfans_link(entity_texts, source_text)
 
+        # Se non trova alcun link, usa la home di usfans come fallback sicuro
         if not product_link:
-            print("⚠️ Nessun link Usfans trovato in questo post, salto l'invio.")
-            return
+            product_link = "https://www.usfans.com"
 
         product_link = fix_affiliate_link(product_link)
 
@@ -158,7 +163,7 @@ async def process_album(group_id):
         else:
             await client.send_message(TARGET_CHAT, final_text, link_preview=False)
 
-        print("✅ ALBUM INVIATO CORRETTAMENTE (SOLO LINK USFANS)!")
+        print("✅ ALBUM INVIATO CORRETTAMENTE!")
 
     except asyncio.CancelledError:
         pass
