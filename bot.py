@@ -6,7 +6,7 @@ from threading import Thread
 from telethon import TelegramClient, events, Button
 from telethon.sessions import StringSession
 
-# 1. Server Web per Railway
+# 1. Server Web per Keep-Alive su Railway
 app = Flask(__name__)
 
 @app.route('/')
@@ -17,7 +17,7 @@ def run_flask():
     port = int(os.environ.get("PORT", 8080))
     app.run(host="0.0.0.0", port=port)
 
-# 2. Configurazione Variabili
+# 2. Configurazione Variabili d'Ambiente
 API_ID = int(os.environ.get("API_ID"))
 API_HASH = os.environ.get("API_HASH")
 STRING_SESSION = os.environ.get("STRING_SESSION")
@@ -29,20 +29,36 @@ TARGET_CHAT = int(raw_target) if raw_target.lstrip('-').isdigit() else raw_targe
 AFFILIATE_TAG = os.environ.get("AFFILIATE_TAG")
 LINK_SCONTO = "https://t.me/+DiuD1AbxY8thYzg0"
 
-# Client User (per ascoltare) e Client Bot (per pubblicare con bottoni)
+# Client User (ascolta) e Client Bot (invia con bottoni)
 user_client = TelegramClient(StringSession(STRING_SESSION), API_ID, API_HASH)
 bot_client = TelegramClient('bot_session', API_ID, API_HASH)
 
 SOURCE_CHATS = ["KakobuySpreadsheet6", -1003634367021, 3634367021]
 
-# Gestione Album di foto
+# Gestione Album
 media_groups = {}
+
+def get_product_emoji(title: str) -> str:
+    """Riconosce la categoria del prodotto e restituisce l'emoji corretta."""
+    t = title.lower()
+    if any(k in t for k in ['shoe', 'sneaker', 'campus', 'jordan', 'dunk', 'yeezy', 'nike', 'adidas', 'travis', 'running', 'slide', 'foam']):
+        return "👟"
+    elif any(k in t for k in ['cap', 'hat', 'berretto', 'cappellino']):
+        return "🧢"
+    elif any(k in t for k in ['hoodie', 'jacket', 'zipper', 'felpa', 'giacca', 'coat', 'fleece', 'puffer']):
+        return "🧥"
+    elif any(k in t for k in ['tee', 't-shirt', 'shirt', 'maglietta']):
+        return "👕"
+    elif any(k in t for k in ['pants', 'shorts', 'trousers', 'pantaloni', 'jeans']):
+        return "👖"
+    elif any(k in t for k in ['bag', 'backpack', 'borsa', 'zaino', 'wallet']):
+        return "👜"
+    return "🛍️"
 
 @user_client.on(events.NewMessage(chats=SOURCE_CHATS))
 async def handler(event):
     message = event.message
     
-    # Se fa parte di un album, raccogliamo tutte le foto prima di inviare
     if message.grouped_id:
         gid = message.grouped_id
         if gid not in media_groups:
@@ -53,7 +69,6 @@ async def handler(event):
         await forward_post([message])
 
 async def process_album(gid):
-    # Attende 2 secondi per raccogliere tutte le foto dell'album
     await asyncio.sleep(2)
     messages = media_groups.pop(gid, [])
     if messages:
@@ -62,7 +77,6 @@ async def process_album(gid):
 async def forward_post(messages):
     print(f"🚨 ELABORAZIONE POST ({len(messages)} elementi)...")
     
-    # Trova il messaggio con il testo
     text_msg = next((m for m in messages if m.text), messages[0])
     text = text_msg.text or ""
 
@@ -72,6 +86,9 @@ async def forward_post(messages):
 
     title = article_match.group(1).strip() if article_match else "Prodotto Esclusivo"
     price = price_match.group(1).strip() if price_match else "N/A"
+
+    # Selezione dinamica emoji
+    emoji = get_product_emoji(title)
 
     # Estrazione Link USFans
     usfans_link = None
@@ -98,7 +115,7 @@ async def forward_post(messages):
         usfans_link += f'?affcode={AFFILIATE_TAG}'
 
     new_text = (
-        f"🧢 **{title}**\n"
+        f"{emoji} **{title}**\n"
         f"💰 **Prezzo: {price}€**\n\n"
         f"🎁 **BONUS BENVENUTO:** Usa i tuoi coupon per risparmiare fino al 40% sul tuo ordine!\n"
         f"🔥 **Batch:** Qualità e dettagli top"
@@ -110,11 +127,9 @@ async def forward_post(messages):
     ]
 
     try:
-        # Raccoglie i media
         media_files = [m.media for m in messages if m.media]
         
         if media_files:
-            # Scarica e reinvia l'album tramite il Bot
             await bot_client.send_file(
                 TARGET_CHAT, 
                 media_files, 
@@ -124,7 +139,7 @@ async def forward_post(messages):
         else:
             await bot_client.send_message(TARGET_CHAT, new_text, buttons=buttons)
             
-        print("✅ ALBUM E BOTTONI PUBBLICATI CON SUCCESSO!")
+        print("✅ ALBUM, EMOJI E BOTTONI PUBBLICATI CON SUCCESSO!")
     except Exception as e:
         print(f"❌ Errore durante l'invio: {e}")
 
@@ -142,5 +157,4 @@ if __name__ == '__main__':
     t.daemon = True
     t.start()
 
-    loop = asyncio.get_event_loop()
-    loop.run_until_complete(main())
+    asyncio.run(main())
