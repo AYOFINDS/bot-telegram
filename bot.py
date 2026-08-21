@@ -41,7 +41,7 @@ LINK_SCONTO = f"https://www.usfans.com/register?ref={AFFILIATE_TAG}"
 # Canali sorgente: username o ID (con -100 per supergruppi)
 SOURCE_CHATS = ["KakobuySpreadsheet6", -1003634367021, 3634367021]
 
-# ------------------------ Inizializza client ---------------------
+# ------------------------ Client Telethon -------------------------
 client = TelegramClient(StringSession(STRING_SESSION), API_ID, API_HASH)
 
 # ------------------------ Buffer Globale -------------------------
