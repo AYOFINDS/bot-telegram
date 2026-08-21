@@ -6,7 +6,7 @@ from threading import Thread
 from telethon import TelegramClient, events, Button
 from telethon.sessions import StringSession
 
-# 1. Server Web per Keep-Alive su Railway
+# 1. Server Web per Railway
 app = Flask(__name__)
 
 @app.route('/')
@@ -17,10 +17,11 @@ def run_flask():
     port = int(os.environ.get("PORT", 8080))
     app.run(host="0.0.0.0", port=port)
 
-# 2. Configurazione Variabili d'Ambiente
+# 2. Configurazione Variabili
 API_ID = int(os.environ.get("API_ID"))
 API_HASH = os.environ.get("API_HASH")
 STRING_SESSION = os.environ.get("STRING_SESSION")
+BOT_TOKEN = os.environ.get("BOT_TOKEN")
 
 raw_target = os.environ.get("TARGET_CHAT", "").strip()
 TARGET_CHAT = int(raw_target) if raw_target.lstrip('-').isdigit() else raw_target
@@ -28,20 +29,42 @@ TARGET_CHAT = int(raw_target) if raw_target.lstrip('-').isdigit() else raw_targe
 AFFILIATE_TAG = os.environ.get("AFFILIATE_TAG")
 LINK_SCONTO = "https://t.me/+DiuD1AbxY8thYzg0"
 
-client = TelegramClient(StringSession(STRING_SESSION), API_ID, API_HASH)
+# Client User (per ascoltare) e Client Bot (per pubblicare con bottoni)
+user_client = TelegramClient(StringSession(STRING_SESSION), API_ID, API_HASH)
+bot_client = TelegramClient('bot_session', API_ID, API_HASH)
 
-# ID o Username del canale da cui copiare
 SOURCE_CHATS = ["KakobuySpreadsheet6", -1003634367021, 3634367021]
 
-@client.on(events.NewMessage(chats=SOURCE_CHATS))
-async def handler(event):
-    # Ignora le immagini secondarie degli album di foto
-    if event.message.grouped_id and not event.message.text:
-        return
+# Gestione Album di foto
+media_groups = {}
 
-    print("🚨 NUOVO POST INTERCETTATO DAL CANALE SORGENTE!")
+@user_client.on(events.NewMessage(chats=SOURCE_CHATS))
+async def handler(event):
     message = event.message
-    text = message.text or ""
+    
+    # Se fa parte di un album, raccogliamo tutte le foto prima di inviare
+    if message.grouped_id:
+        gid = message.grouped_id
+        if gid not in media_groups:
+            media_groups[gid] = []
+            asyncio.create_task(process_album(gid))
+        media_groups[gid].append(message)
+    else:
+        await forward_post([message])
+
+async def process_album(gid):
+    # Attende 2 secondi per raccogliere tutte le foto dell'album
+    await asyncio.sleep(2)
+    messages = media_groups.pop(gid, [])
+    if messages:
+        await forward_post(messages)
+
+async def forward_post(messages):
+    print(f"🚨 ELABORAZIONE POST ({len(messages)} elementi)...")
+    
+    # Trova il messaggio con il testo
+    text_msg = next((m for m in messages if m.text), messages[0])
+    text = text_msg.text or ""
 
     # Estrazione Titolo e Prezzo
     article_match = re.search(r'Article:\s*(.*)', text)
@@ -52,8 +75,8 @@ async def handler(event):
 
     # Estrazione Link USFans
     usfans_link = None
-    if message.entities:
-        for entity in message.entities:
+    if text_msg.entities:
+        for entity in text_msg.entities:
             if hasattr(entity, 'url') and entity.url and 'usfans' in entity.url.lower():
                 usfans_link = entity.url
                 break
@@ -66,7 +89,7 @@ async def handler(event):
     if not usfans_link:
         usfans_link = "https://usfans.com"
 
-    # Applicazione del Tag Affiliato
+    # Applicazione Tag Affiliato
     if 'affcode=' in usfans_link:
         usfans_link = re.sub(r'(affcode=)[^&\s]+', f'affcode={AFFILIATE_TAG}', usfans_link)
     elif '?' in usfans_link:
@@ -74,7 +97,6 @@ async def handler(event):
     else:
         usfans_link += f'?affcode={AFFILIATE_TAG}'
 
-    # Testo formattato finale
     new_text = (
         f"🧢 **{title}**\n"
         f"💰 **Prezzo: {price}€**\n\n"
@@ -88,19 +110,37 @@ async def handler(event):
     ]
 
     try:
-        if message.media:
-            await client.send_file(TARGET_CHAT, message.media, caption=new_text, buttons=buttons)
+        # Raccoglie i media
+        media_files = [m.media for m in messages if m.media]
+        
+        if media_files:
+            # Scarica e reinvia l'album tramite il Bot
+            await bot_client.send_file(
+                TARGET_CHAT, 
+                media_files, 
+                caption=new_text, 
+                buttons=buttons
+            )
         else:
-            await client.send_message(TARGET_CHAT, new_text, buttons=buttons)
-        print("✅ POST INVIATO CON SUCCESSO SUL TUO CANALE!")
+            await bot_client.send_message(TARGET_CHAT, new_text, buttons=buttons)
+            
+        print("✅ ALBUM E BOTTONI PUBBLICATI CON SUCCESSO!")
     except Exception as e:
-        print(f"❌ Errore durante l'invio al canale: {e}")
+        print(f"❌ Errore durante l'invio: {e}")
+
+async def main():
+    await bot_client.start(bot_token=BOT_TOKEN)
+    await user_client.start()
+    print("🚀 Bot e User Session connessi e pronti!")
+    await asyncio.gather(
+        user_client.run_until_disconnected(),
+        bot_client.run_until_disconnected()
+    )
 
 if __name__ == '__main__':
     t = Thread(target=run_flask)
     t.daemon = True
     t.start()
 
-    print("🚀 Bot avviato e pronto ad inoltrare i post in automatico!")
-    client.start()
-    client.run_until_disconnected()
+    loop = asyncio.get_event_loop()
+    loop.run_until_complete(main())
