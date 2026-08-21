@@ -9,7 +9,7 @@ from telethon import TelegramClient, events, Button
 from telethon.sessions import StringSession
 from telethon.errors import FloodWaitError
 
-# 1. Server Web Keep-Alive
+# 1. Server Web Keep-Alive (Waitress)
 app = Flask(__name__)
 
 @app.route('/')
@@ -35,7 +35,8 @@ client = TelegramClient(StringSession(STRING_SESSION), API_ID, API_HASH)
 
 SOURCE_CHATS = ["KakobuySpreadsheet6", -1003634367021, 3634367021]
 
-album_buffers = {}
+# Buffer per unificare foto e messaggi di testo separati
+chat_buffers = {}
 
 def get_product_emoji(title: str) -> str:
     t = title.lower()
@@ -58,29 +59,27 @@ def get_product_emoji(title: str) -> str:
 @client.on(events.NewMessage(chats=SOURCE_CHATS))
 async def handler(event):
     message = event.message
-    
-    if message.grouped_id:
-        gid = message.grouped_id
-        
-        if gid not in album_buffers:
-            album_buffers[gid] = {
-                'messages': [],
-                'task': None
-            }
-        
-        album_buffers[gid]['messages'].append(message)
-        
-        if album_buffers[gid]['task'] is not None:
-            album_buffers[gid]['task'].cancel()
-            
-        album_buffers[gid]['task'] = asyncio.wait_for(wait_and_process_album(gid), timeout=None)
-    else:
-        await forward_post([message])
+    chat_id = event.chat_id
 
-async def wait_and_process_album(gid):
+    if chat_id not in chat_buffers:
+        chat_buffers[chat_id] = {
+            'messages': [],
+            'task': None
+        }
+
+    chat_buffers[chat_id]['messages'].append(message)
+
+    # Se arrivano altri elementi (foto o testo) nello stesso canale, si resetta il timer
+    if chat_buffers[chat_id]['task'] is not None:
+        chat_buffers[chat_id]['task'].cancel()
+
+    chat_buffers[chat_id]['task'] = asyncio.create_task(wait_and_process_chat(chat_id))
+
+async def wait_and_process_chat(chat_id):
     try:
-        await asyncio.sleep(4.0)
-        buffer = album_buffers.pop(gid, None)
+        # Aspetta 5 secondi per essere certi che Telegram abbia consegnato sia le foto che il testo
+        await asyncio.sleep(5.0)
+        buffer = chat_buffers.pop(chat_id, None)
         if buffer and buffer['messages']:
             await forward_post(buffer['messages'])
     except asyncio.CancelledError:
@@ -104,51 +103,49 @@ async def forward_post(messages):
     
     full_text = ""
     entities = []
+    media_messages = []
 
-    # Controllo profondo su tutte le possibili fonti di testo/caption/entities
+    # Separa le foto dai testi
     for m in messages:
+        if m.media:
+            media_messages.append(m)
+        
         txt = getattr(m, 'text', '') or getattr(m, 'message', '') or getattr(m, 'caption', '') or getattr(m, 'raw_text', '') or ""
         if len(txt.strip()) > 0:
-            full_text = txt
-            entities = m.entities or getattr(m, 'caption_entities', []) or []
-            break
+            full_text += f"\n{txt}"
+            if m.entities:
+                entities.extend(m.entities)
+            elif getattr(m, 'caption_entities', None):
+                entities.extend(m.caption_entities)
 
-    # Se non c'è testo nel canale originale, viene generato un testo predefinito anziché interrompere
-    if not full_text:
-        print("⚠️ Nessun testo trovato nell'album. Generazione post con layout predefinito.")
-        article_val = "Prodotto Esclusivo"
-        price_val = "N/A"
-        usfans_link = "https://www.usfans.com"
-    else:
-        article_match = re.search(r'Article:\s*(.*)', full_text, re.IGNORECASE)
-        price_match = re.search(r'Price:\s*(.*)', full_text, re.IGNORECASE)
+    article_match = re.search(r'Article:\s*(.*)', full_text, re.IGNORECASE)
+    price_match = re.search(r'Price:\s*(.*)', full_text, re.IGNORECASE)
 
-        article_val = article_match.group(1).strip() if article_match else "Prodotto Esclusivo"
-        price_val = price_match.group(1).strip() if price_match else "N/A"
+    article_val = article_match.group(1).strip() if article_match else "Prodotto Esclusivo"
+    price_val = price_match.group(1).strip() if price_match else "N/A"
 
-        usfans_link = None
+    usfans_link = None
+
+    # Search per link Usfans o in alternativa qualsiasi link nella lista
+    for entity in entities:
+        if hasattr(entity, 'url') and entity.url:
+            url = entity.url
+            if 'usfans' in url.lower():
+                usfans_link = url
+                break
+
+    if not usfans_link:
         for entity in entities:
-            if hasattr(entity, 'url') and entity.url:
-                offset = getattr(entity, 'offset', 0)
-                length = getattr(entity, 'length', 0)
-                entity_text = full_text[offset:offset+length].lower() if full_text else ""
-                
-                if 'usfans' in entity_text or 'usfans.com' in entity.url.lower():
-                    usfans_link = entity.url
-                    break
+            if hasattr(entity, 'url') and entity.url and entity.url.startswith("http"):
+                usfans_link = entity.url
+                break
 
-        if not usfans_link:
-            for entity in entities:
-                if hasattr(entity, 'url') and entity.url and 'usfans' in entity.url.lower():
-                    usfans_link = entity.url
-                    break
-
-        if not usfans_link:
-            usfans_link = "https://www.usfans.com"
+    if not usfans_link:
+        usfans_link = "https://www.usfans.com"
 
     emoji = get_product_emoji(article_val)
 
-    # Formattazione e pulizia Link Affiliato
+    # Clean & Affiliato
     usfans_link = re.sub(r'[\?&](ref|affcode)=[^&\s]+', '', usfans_link)
     if '?' in usfans_link:
         usfans_link += f'&affcode={AFFILIATE_TAG}'
@@ -168,9 +165,9 @@ async def forward_post(messages):
     ]
 
     try:
-        messages.sort(key=lambda m: m.id)
+        media_messages.sort(key=lambda m: m.id)
         
-        tasks = [download_single_media(m, idx) for idx, m in enumerate(messages)]
+        tasks = [download_single_media(m, idx) for idx, m in enumerate(media_messages)]
         downloaded = await asyncio.gather(*tasks)
         image_files = [f for f in downloaded if f is not None]
 
@@ -180,7 +177,7 @@ async def forward_post(messages):
         else:
             await client.send_message(TARGET_CHAT, new_text, buttons=buttons)
             
-        print("✅ ALBUM E LINK AFFILIATI PUBBLICATI CON SUCCESSO!")
+        print("✅ POST E LINK AFFILIATI PUBBLICATI CON SUCCESSO!")
     except Exception as e:
         print(f"❌ Errore durante l'invio: {e}")
 
