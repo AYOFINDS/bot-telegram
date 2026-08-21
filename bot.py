@@ -33,51 +33,48 @@ client = TelegramClient(StringSession(STRING_SESSION), API_ID, API_HASH)
 
 SOURCE_CHATS = ["KakobuySpreadsheet6", -1003634367021, 3634367021]
 
-# Memoria unificata per raccogliere album e testo correlato dello stesso post
-active_posts = {}
+posts_buffer = {}
 
 @client.on(events.NewMessage(chats=SOURCE_CHATS))
 async def handler(event):
     msg = event.message
-    chat_id = event.chat_id
+    post_key = msg.grouped_id if msg.grouped_id else msg.id
 
-    # Chiave univoca per identificare il flusso del canale
-    key = chat_id
-
-    if key not in active_posts:
-        active_posts[key] = {
+    if post_key not in posts_buffer:
+        posts_buffer[post_key] = {
             'media_list': [],
             'raw_text': "",
             'entities': [],
             'timer': None
         }
 
-    # Se il messaggio ha delle foto (album o foto singola)
     if msg.media:
-        active_posts[key]['media_list'].append(msg)
-        # Se c'è una didascalia nella foto, salviamola
+        posts_buffer[post_key]['media_list'].append(msg)
         cap = getattr(msg, 'caption', '') or ''
         if cap and ('Article:' in cap or 'Price:' in cap):
-            active_posts[key]['raw_text'] = cap
-            active_posts[key]['entities'] = msg.caption_entities or []
+            posts_buffer[post_key]['raw_text'] = cap
+            posts_buffer[post_key]['entities'] = msg.caption_entities or []
 
-    # Se il messaggio è un blocco di testo separato (quello con Article e Price)
-    if msg.text and ('Article:' in msg.text or 'Price:' in msg.text or 'spreadsheet' in msg.text.lower()):
-        active_posts[key]['raw_text'] = msg.text
-        active_posts[key]['entities'] = msg.entities or []
+    if msg.text and ('Article:' in msg.text or 'Price:' in msg.text):
+        posts_buffer[post_key]['raw_text'] = msg.text
+        posts_buffer[post_key]['entities'] = msg.entities or []
+        
+        for offset in [-1, +1]:
+            neighbor_key = post_key + offset
+            if neighbor_key in posts_buffer and not posts_buffer[neighbor_key]['raw_text']:
+                posts_buffer[neighbor_key]['raw_text'] = msg.text
+                posts_buffer[neighbor_key]['entities'] = msg.entities or []
 
-    # Resetta o avvia il timer di aggregazione (10 secondi di respiro per raccogliere tutto)
-    if active_posts[key]['timer']:
-        active_posts[key]['timer'].cancel()
+    if posts_buffer[post_key]['timer']:
+        posts_buffer[post_key]['timer'].cancel()
 
-    active_posts[key]['timer'] = asyncio.create_task(process_accumulated_post(key))
+    posts_buffer[post_key]['timer'] = asyncio.create_task(process_single_post(post_key))
 
-async def process_accumulated_post(key):
+async def process_single_post(post_key):
     try:
-        # Aspettiamo 10 secondi per assicurarci che siano arrivate tutte le foto e il testo del post
         await asyncio.sleep(10.0)
         
-        data = active_posts.pop(key, None)
+        data = posts_buffer.pop(post_key, None)
         if not data:
             return
 
@@ -85,10 +82,18 @@ async def process_accumulated_post(key):
         source_text = data['raw_text']
         entities = data['entities']
 
-        if not media_list and not source_text:
-            return
+        if not source_text and media_list:
+            for m in media_list:
+                cap = getattr(m, 'caption', '') or ''
+                if cap:
+                    source_text = cap
+                    entities = m.caption_entities or []
+                    break
 
-        print(f"🚨 ELABORAZIONE POST AGGREGATO: {len(media_list)} foto trovate.")
+        if not source_text:
+            source_text = "🔍 Article: Prodotto Esclusivo\n💰 Price: N/A"
+
+        print(f"🚨 ELABORAZIONE POST [Key: {post_key}]: {len(media_list)} foto trovate.")
 
         # Estrazione precisa di articolo e prezzo
         article_line = "🔍 Article: Prodotto Esclusivo"
@@ -104,23 +109,24 @@ async def process_accumulated_post(key):
         product_link = None
         for entity in entities:
             if hasattr(entity, 'url') and entity.url:
-                if 'usfans.com' in entity.url.lower():
+                if 'usfans' in entity.url.lower():
                     product_link = entity.url
                     break
 
         if not product_link:
             urls = re.findall(r'https?://[^\s]+', source_text)
             for u in urls:
-                if 'usfans' in u.lower():
+                if 'usfans' in u.lower() or 'usfans.com' in u.lower():
                     product_link = u
                     break
             if not product_link and urls:
                 product_link = urls[0]
 
+        # FALLBACK SICURO: Se proprio non trova nessun link, usa il link base di Usfans
         if not product_link:
             product_link = "https://www.usfans.com"
 
-        # Sostituzione del codice affiliato con il tuo U2CC3E
+        # Sostituzione forzata del codice affiliato con il tuo U2CC3E
         product_link = re.sub(r'[\?&](ref|affcode)=[^&\s]+', '', product_link)
         if '?' in product_link:
             product_link += f'&affcode={AFFILIATE_TAG}'
@@ -135,16 +141,15 @@ async def process_accumulated_post(key):
             f"🔥 **Batch:** Qualità e dettagli top"
         )
 
+        # I DUE TASTI OBBLIGATORI CHE SARANNO SEMPRE PRESENTI
         buttons = [
             [Button.url("🛒 ACQUISTA PRODOTTO", product_link)],
             [Button.url("🎁 ISCRIVITI + 40% DI SCONTO", LINK_SCONTO)]
         ]
 
-        # Filtra solo i messaggi multimediali validi
         media_messages = [m for m in media_list if m.media]
         media_messages.sort(key=lambda x: x.id)
 
-        # Scarica le foto in modo sicuro
         tasks = [download_media_safe(m, idx) for idx, m in enumerate(media_messages)]
         downloaded = await asyncio.gather(*tasks)
         image_files = [f for f in downloaded if f is not None]
@@ -155,7 +160,7 @@ async def process_accumulated_post(key):
         else:
             await client.send_message(TARGET_CHAT, final_text, buttons=buttons)
 
-        print("✅ POST INVIATO ALLA PERFEZIONE!")
+        print("✅ POST INVIATO CON TESTO, FOTO E I DUE TASTI AFFILIATI!")
 
     except asyncio.CancelledError:
         pass
