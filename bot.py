@@ -10,6 +10,7 @@ from telethon import TelegramClient, events
 from telethon.sessions import StringSession
 from telethon.errors import FloodWaitError
 
+# ----------------------------- Flask -----------------------------
 app = Flask(__name__)
 
 @app.route('/')
@@ -20,6 +21,7 @@ def run_flask():
     port = int(os.environ.get("PORT", 8080))
     serve(app, host="0.0.0.0", port=port)
 
+# -------------------------- Config -------------------------------
 raw_api_id = os.environ.get("API_ID")
 API_HASH = os.environ.get("API_HASH")
 STRING_SESSION = os.environ.get("STRING_SESSION")
@@ -36,12 +38,18 @@ TARGET_CHAT = int(raw_target) if raw_target.lstrip('-').isdigit() else raw_targe
 AFFILIATE_TAG = os.environ.get("AFFILIATE_TAG", "U2CC3E")
 LINK_SCONTO = f"https://www.usfans.com/register?ref={AFFILIATE_TAG}"
 
+# Canali sorgente: username o ID (con -100 per supergruppi)
 SOURCE_CHATS = ["KakobuySpreadsheet6", -1003634367021, 3634367021]
 
-buffers = {}
-chat_active_buffers = {}
-BUFFER_TIMEOUT = 5.0
+# ------------------------ Inizializza client ---------------------
+client = TelegramClient(StringSession(STRING_SESSION), API_ID, API_HASH)
 
+# ------------------------ Buffer Globale -------------------------
+buffers = {}                 # chiave -> dati del buffer
+chat_active_buffers = {}     # chat_id -> [lista di chiavi attive]
+BUFFER_TIMEOUT = 5.0         # secondi per attendere il messaggio complementare
+
+# -------------------------- Funzioni -----------------------------
 def fix_affiliate_link(url, tag=AFFILIATE_TAG):
     if not url:
         return url
@@ -87,6 +95,7 @@ async def process_post(key):
     source_text = data['text'] or ""
     entities = data['entities'] or []
 
+    # Estrai Article e Price
     article_line = "Article: Prodotto Esclusivo"
     price_line = "Price: N/A"
     for line in source_text.split('\n'):
@@ -96,6 +105,7 @@ async def process_post(key):
         elif 'price:' in clean.lower():
             price_line = clean
 
+    # Estrai link prodotto (escludi register)
     product_link = None
     for entity in entities:
         if hasattr(entity, 'url') and entity.url:
@@ -113,6 +123,7 @@ async def process_post(key):
 
     product_link = fix_affiliate_link(product_link)
 
+    # Messaggio finale
     final_text = (
         f"🎖️ **Official Spreadsheet** 🎖️\n"
         f"✈️ {article_line}\n"
@@ -123,12 +134,14 @@ async def process_post(key):
         f"🚨 **Warm Risk Reminder Popup** 🚨"
     )
 
+    # Scarica le foto
     media_messages = [m for m in media_list if m.media]
     media_messages.sort(key=lambda x: x.id)
     tasks = [download_media_safe(m, i) for i, m in enumerate(media_messages)]
     downloaded = await asyncio.gather(*tasks)
     image_files = [f for f in downloaded if f is not None]
 
+    # Invio come album con caption
     if image_files:
         await client.send_file(
             TARGET_CHAT,
@@ -140,6 +153,7 @@ async def process_post(key):
     else:
         await client.send_message(TARGET_CHAT, final_text, link_preview=False)
 
+# -------------------------- Handler ------------------------------
 @client.on(events.NewMessage)
 async def handler(event):
     msg = event.message
@@ -147,6 +161,7 @@ async def handler(event):
     chat = await event.get_chat()
     chat_title = getattr(chat, 'title', getattr(chat, 'username', 'Chat privata'))
 
+    # Verifica se il canale è nella lista sorgente
     is_valid = any(
         str(src) == str(chat_id) or
         (isinstance(src, str) and src.lower() in str(chat_title).lower())
@@ -163,13 +178,16 @@ async def handler(event):
 
     now = time.time()
     grouped_id = msg.grouped_id if has_media else None
+
+    # Definizione della chiave
     if not has_media and has_text:
         key = "text_" + str(msg.id)
     elif has_media and grouped_id:
         key = grouped_id
-    else:
+    else:  # singola foto senza grouped_id
         key = msg.id
 
+    # Se esiste già un buffer con questa chiave, aggiorna
     if key in buffers:
         buffer = buffers[key]
         if has_media:
@@ -183,7 +201,9 @@ async def handler(event):
         buffer['timestamp'] = now
         return
 
+    # Caso: messaggio con grouped_id (album)
     if has_media and grouped_id:
+        # Cerca un buffer di solo testo nella stessa chat
         active_keys = chat_active_buffers.get(chat_id, [])
         for other_key in active_keys:
             other = buffers.get(other_key)
@@ -192,7 +212,9 @@ async def handler(event):
             if now - other['timestamp'] > BUFFER_TIMEOUT:
                 continue
             if not other['media_list'] and other['text']:
+                # Unisci il media al buffer di testo
                 other['media_list'].append(msg)
+                # Cambia la chiave al grouped_id
                 del buffers[other_key]
                 buffers[grouped_id] = other
                 if chat_id in chat_active_buffers:
@@ -204,6 +226,7 @@ async def handler(event):
                 other['timestamp'] = now
                 return
 
+        # Se non trovato, crea un nuovo buffer per l'album
         new_buffer = {
             'media_list': [msg],
             'text': msg.caption or "",
@@ -217,7 +240,9 @@ async def handler(event):
         chat_active_buffers.setdefault(chat_id, []).append(grouped_id)
         return
 
+    # Caso: messaggio di solo testo (senza media)
     if has_text and not has_media:
+        # Cerca un buffer esistente con media e senza testo
         active_keys = chat_active_buffers.get(chat_id, [])
         for other_key in active_keys:
             other = buffers.get(other_key)
@@ -234,6 +259,7 @@ async def handler(event):
                 other['timestamp'] = now
                 return
 
+        # Se non trovato, crea un buffer di solo testo
         new_buffer = {
             'media_list': [],
             'text': msg.text,
@@ -246,6 +272,7 @@ async def handler(event):
         new_buffer['timer'] = asyncio.create_task(process_post(key))
         chat_active_buffers.setdefault(chat_id, []).append(key)
 
+# -------------------------- Main --------------------------------
 async def main():
     while True:
         try:
@@ -260,7 +287,6 @@ async def main():
             await asyncio.sleep(10)
 
 if __name__ == '__main__':
-    client = TelegramClient(StringSession(STRING_SESSION), API_ID, API_HASH)
     t = Thread(target=run_flask)
     t.daemon = True
     t.start()
