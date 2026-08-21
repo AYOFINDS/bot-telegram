@@ -6,7 +6,6 @@ from flask import Flask
 from threading import Thread
 from telethon import TelegramClient, events, Button
 from telethon.sessions import StringSession
-from telethon.tl.types import InputMediaPhoto
 
 # 1. Server Web Keep-Alive
 app = Flask(__name__)
@@ -70,15 +69,27 @@ async def handler(event):
         await forward_post([message])
 
 async def process_album(gid):
-    await asyncio.sleep(3.0)
+    await asyncio.sleep(2.0)
     messages = media_groups.pop(gid, [])
     if messages:
         await forward_post(messages)
 
+async def download_single_media(m, idx):
+    if not m.media:
+        return None
+    try:
+        file_bytes = await asyncio.wait_for(user_client.download_media(m.media, file=bytes), timeout=10.0)
+        if file_bytes:
+            bio = io.BytesIO(file_bytes)
+            bio.name = f"photo_{idx}.jpg"
+            return bio
+    except Exception as e:
+        print(f"⚠️ Errore/Timeout download foto {idx}: {e}")
+    return None
+
 async def forward_post(messages):
     print(f"🚨 ELABORAZIONE POST ({len(messages)} elementi)...")
     
-    # 1. Recupero Testo ed Entità
     full_text = ""
     entities = []
     for m in messages:
@@ -87,10 +98,10 @@ async def forward_post(messages):
             entities = m.entities or []
             break
 
-    if not full_text:
-        return
+    if not full_text and len(messages) > 1:
+        # Se è un album senza testo su nessuna foto, usa la prima disponibile
+        full_text = ""
 
-    # 2. Estrazione Titolo e Prezzo avanzata
     title = "Prodotto Esclusivo"
     price = "N/A"
 
@@ -98,7 +109,6 @@ async def forward_post(messages):
     if title_match:
         title = title_match.group(1).strip()
     else:
-        # Prende la prima riga di testo valida come titolo
         lines = [line.strip() for line in full_text.split('\n') if line.strip()]
         if lines:
             title = lines[0]
@@ -113,13 +123,11 @@ async def forward_post(messages):
 
     emoji = get_product_emoji(title)
 
-    # 3. Estrazione Link Prodotto Completo
     usfans_link = None
-    
     if entities:
         for entity in entities:
             if hasattr(entity, 'url') and entity.url:
-                if 'usfans' in entity.url.lower() or 'kakobuy' in entity.url.lower() or 'http' in entity.url.lower():
+                if any(k in entity.url.lower() for k in ['usfans', 'kakobuy', 'http']):
                     usfans_link = entity.url
                     break
 
@@ -131,7 +139,6 @@ async def forward_post(messages):
     if not usfans_link:
         usfans_link = "https://usfans.com"
 
-    # Sostituzione/Inserimento del Tag Affiliato nell'URL specifico
     if 'affcode=' in usfans_link:
         usfans_link = re.sub(r'(affcode=)[^&\s]+', f'affcode={AFFILIATE_TAG}', usfans_link)
     elif '?' in usfans_link:
@@ -152,33 +159,20 @@ async def forward_post(messages):
     ]
 
     try:
-        image_files = []
         messages.sort(key=lambda m: m.id)
-
-        for idx, m in enumerate(messages):
-            if m.media:
-                file_bytes = await user_client.download_media(m.media, file=bytes)
-                if file_bytes:
-                    bio = io.BytesIO(file_bytes)
-                    bio.name = f"photo_{idx}.jpg"
-                    image_files.append(bio)
+        
+        # Download in parallelo ultra veloce con Timeout
+        tasks = [download_single_media(m, idx) for idx, m in enumerate(messages)]
+        downloaded = await asyncio.gather(*tasks)
+        image_files = [f for f in downloaded if f is not None]
 
         if image_files:
-            # Invio album foto
-            await bot_client.send_file(
-                TARGET_CHAT, 
-                image_files
-            )
-            # Invio messaggio formattato con i pulsanti attivi subito sotto
-            await bot_client.send_message(
-                TARGET_CHAT,
-                new_text,
-                buttons=buttons
-            )
+            await bot_client.send_file(TARGET_CHAT, image_files)
+            await bot_client.send_message(TARGET_CHAT, new_text, buttons=buttons)
         else:
             await bot_client.send_message(TARGET_CHAT, new_text, buttons=buttons)
             
-        print("✅ POST, LINK COMPLETI E BOTTONI PUBBLICATI CON SUCCESSO!")
+        print("✅ POST PUBBLICATO CON SUCCESSO IN POCHI SECONDI!")
     except Exception as e:
         print(f"❌ Errore durante l'invio: {e}")
 
