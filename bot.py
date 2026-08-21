@@ -18,8 +18,8 @@ api_hash = os.environ.get("API_HASH", "YOUR_API_HASH")
 bot_token = os.environ.get("BOT_TOKEN", "YOUR_BOT_TOKEN")
 port = int(os.environ.get("PORT", "8000"))
 
-# Inserisci qui il tuo vero ID Telegram
-ADMIN_IDS = [123456789] 
+# ✅ IL TUO ID È GIÀ INSERITO QUI
+ADMIN_IDS = [6636517553] 
 DB_PATH = "bot_database.db"
 
 # --- INIZIALIZZAZIONE CLIENT E FLASK ---
@@ -152,6 +152,10 @@ async def callback(event):
 @client.on(events.NewMessage)
 async def onNewMessage(event):
     if event.out: 
+        return
+
+    # Ignora qualsiasi messaggio che inizia con "/" (come /start, /help, ecc.)
+    if event.raw_text.startswith('/'):
         return
 
     save_user(event.sender_id, event.sender.first_name)
