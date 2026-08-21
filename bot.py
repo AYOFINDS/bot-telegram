@@ -3,6 +3,7 @@ import re
 from flask import Flask
 from threading import Thread
 from telethon import TelegramClient, events, Button
+from telethon.sessions import StringSession
 
 app = Flask(__name__)
 
@@ -14,9 +15,10 @@ def run_flask():
     port = int(os.environ.get("PORT", 8080))
     app.run(host="0.0.0.0", port=port)
 
+# Configurazione variabili
 API_ID = int(os.environ.get("API_ID"))
 API_HASH = os.environ.get("API_HASH")
-BOT_TOKEN = os.environ.get("BOT_TOKEN")
+STRING_SESSION = os.environ.get("STRING_SESSION")
 
 raw_target = os.environ.get("TARGET_CHAT", "").strip()
 TARGET_CHAT = int(raw_target) if raw_target.lstrip('-').isdigit() else raw_target
@@ -25,7 +27,8 @@ AFFILIATE_TAG = os.environ.get("AFFILIATE_TAG")
 SOURCE_CHANNEL = "KakobuySpreadsheet6"
 LINK_SCONTO = "https://t.me/+DiuD1AbxY8thYzg0"
 
-client = TelegramClient('bot_session', API_ID, API_HASH)
+# Inizializzazione Client come User (tramite StringSession)
+client = TelegramClient(StringSession(STRING_SESSION), API_ID, API_HASH)
 
 @client.on(events.NewMessage(chats=SOURCE_CHANNEL))
 async def handler(event):
@@ -83,5 +86,5 @@ if __name__ == '__main__':
     t.daemon = True
     t.start()
     print("Bot avviato con Server Web...")
-    client.start(bot_token=BOT_TOKEN)
+    client.start()
     client.run_until_disconnected()
